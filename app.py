@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Vigilancia FIR SAVC - Visual", page_icon="✈️", layout="wide")
+st.set_page_config(page_title="Vigilancia FIR SAVC", page_icon="✈️", layout="wide")
 
 if 'historial_alertas' not in st.session_state:
     st.session_state.historial_alertas = []
@@ -23,20 +23,20 @@ hide_st_style = """
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
-# Refresco cada 30 minutos (1.800.000 ms)
+# Refresco automático cada 30 minutos (1.800.000 ms)
 st_autorefresh(interval=1800000, key="datarefresh")
 
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
-# --- 2. MOTOR DE LÓGICA Y TIEMPO ---
+# --- 2. MOTOR DE LÓGICA (TIEMPO Y CRITERIOS) ---
 
 def obtener_periodo_vigente(taf_text):
-    """Detecta el grupo TAF FM/BECMG/TEMPO que aplica AHORA (UTC)"""
+    """Detecta el grupo TAF (FM/BECMG/TEMPO) que aplica AHORA en UTC"""
     ahora_utc = datetime.now(timezone.utc)
     h_actual, d_actual = ahora_utc.hour, ahora_utc.day
     partes = re.split(r'\b(FM|BECMG|TEMPO|PROB\d{2})\b', taf_text)
-    vigente = partes[0] # Base
+    vigente = partes[0] 
     for i in range(1, len(partes), 2):
         indicador, contenido = partes[i], partes[i+1]
         match = re.search(r'(\d{2})(\d{2})/(\d{2})(\d{2})', contenido)
@@ -65,15 +65,65 @@ def extraer_fenos(texto):
     return set(p for p in palabras if any(c in p.replace("+","").replace("-","") for c in codigos) and len(p) <= 5)
 
 def obtener_icono_condicion(metar_text):
-    """Mapeo avanzado: Icono de condición + Icono de intensidad (+)"""
-    icon_cond = "✈️" # Default aviación
-    icon_int = "⚠️ " if "+" in metar_text else "" # Triángulo de advertencia para Fuerte
+    """Mapeo de iconos según fenómeno e intensidad (+)"""
+    icon_cond = "✈️"
+    icon_int = "⚠️ " if "+" in metar_text else ""
     
-    # Prioridad de Fenómenos
-    if "TS" in metar_text: icon_cond = "⛈️" # Tormenta
-    elif "VA" in metar_text: icon_cond = "🌋" # Ceniza
-    elif "SQ" in metar_text: icon_cond = "💨" # Turbonada
-    elif "FC" in metar_text: icon_cond = "🌪️" # Tornado/Embudo
-    elif "SN" in metar_text or "SG" in metar_text: icon_cond = "❄️" # Nieve
-    elif "RA" in metar_text or "DZ" in metar_text: icon_cond = "🌧️" # Lluvia
-    elif "FG" in metar_text
+    if "TS" in metar_text: icon_cond = "⛈️"
+    elif "VA" in metar_text: icon_cond = "🌋"
+    elif "SN" in metar_text: icon_cond = "❄️"
+    elif "RA" in metar_text or "DZ" in metar_text: icon_cond = "🌧️"
+    elif "FG" in metar_text or "BR" in metar_text: icon_cond = "🌫️"
+    elif "SQ" in metar_text: icon_cond = "💨"
+    elif "CAVOK" in metar_text or "SKC" in metar_text: icon_cond = "☀️"
+    elif "BKN" in metar_text or "OVC" in metar_text: icon_cond = "☁️"
+    elif "SCT" in metar_text or "FEW" in metar_text: icon_cond = "⛅"
+    
+    return f"{icon_int}{icon_cond}"
+
+def auditar(icao, metar, taf_completo):
+    periodo = obtener_periodo_vigente(taf_completo)
+    enmiendas = []
+    
+    dr, vr, gr = parse_viento(metar)
+    dt, vt, gt = parse_viento(periodo)
+    vm, vp = parse_visibilidad(metar), parse_visibilidad(periodo)
+    nm, np = parse_nubes(metar), parse_nubes(periodo)
+    fm, fp = extraer_fenos(metar), extraer_fenos(periodo)
+
+    # Criterios Viento
+    if vr is not None and vt is not None:
+        if (vr >= 10 or vt >= 10) and abs(dr - dt) >= 60: enmiendas.append("VIENTO: Giro >= 60°")
+        if abs(vr - vt) >= 10: enmiendas.append("VIENTO: Dif. Vel. media >= 10kt")
+        if (vr >= 15 or vt >= 15) and abs(gr - gt) >= 10: enmiendas.append("VIENTO: Ráfaga (Dif >= 10kt)")
+
+    # Criterios Visibilidad (150, 350, 600, 800, 1500, 3000, 5000)
+    for u in [150, 350, 600, 800, 1500, 3000, 5000]:
+        if (vm <= u < vp) or (vp <= u < vm):
+            enmiendas.append(f"VIS: Pasó umbral {u}m")
+            break
+
+    # Criterios Techos (100, 200, 500, 1000, 1500)
+    for u in [100, 200, 500, 1000, 1500]:
+        if (nm <= u < np) or (np <= u < nm):
+            enmiendas.append(f"NUBES: Techo pasó {u}ft")
+            break
+
+    # Criterios Fenómenos (Inicio, Fin o Intensidad)
+    diff = fm.symmetric_difference(fp)
+    if diff:
+        for c in diff: enmiendas.append(f"FENÓMENO: Cambio en {c}")
+
+    return enmiendas, periodo
+
+# --- 3. INTERFAZ ---
+st.title("🖥️ Monitor FIR SAVC - Auditoría SMN")
+
+cols = st.columns(2)
+headers = {"X-API-Key": API_KEY}
+
+for i, icao in enumerate(AERODROMOS):
+    try:
+        r_hash = random.randint(1, 999999)
+        m_raw = requests.get(f"https://api.checkwx.com/metar/{icao}?cache={r_hash}", headers=headers).json().get('data',['-'])[0]
+        t_raw = requests.get(f"https://api.checkwx.
