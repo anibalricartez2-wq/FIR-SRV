@@ -129,4 +129,11 @@ if st.session_state.log:
     with st.expander("📋 HISTORIAL DE DESVIACIONES DEL TURNO"):
         for item in reversed(st.session_state.log): st.text(item)
 
-st.
+st.markdown(f"""
+    <div style="text-align: center; color: gray; font-size: 0.85rem; padding-top: 20px;">
+        <hr>
+        <b>VIGILANCIA TÉCNICA SAVC</b><br>
+        Desarrollado por: <b>Operaciones & Gemini AI</b><br>
+        Criterios: SMN Argentina | API: CheckWX
+    </div>
+    """, unsafe_allow_html=True)
