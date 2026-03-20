@@ -1,148 +1,87 @@
-import streamlit as st
-import requests
-import re
-import pandas as pd
-from datetime import datetime, timezone
-from streamlit_autorefresh import st_autorefresh
+# --- CONFIGURACIÓN DE CRITERIOS DE ENMIENDA (SMN ARGENTINA) ---
 
-# --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Vigilancia FIR SAVC", page_icon="✈️", layout="wide")
+# Umbrales de visibilidad en metros
+VIS_THRESHOLDS = [150, 350, 600, 800, 1500, 3000, 5000]
 
-if 'historial_alertas' not in st.session_state:
-    st.session_state.historial_alertas = []
-if 'last_alert_id' not in st.session_state:
-    st.session_state.last_alert_id = {}
+# Umbrales de techo de nubes (BKN/OVC) y visibilidad vertical en pies
+CEILING_THRESHOLDS = [100, 200, 500, 1000, 1500]
 
-st_autorefresh(interval=120000, key="datarefresh")
+# Fenómenos significativos que requieren enmienda inmediata
+# Se dispara si inician, terminan o cambian de intensidad
+SIG_PHENOMENA = [
+    'TS', 'GR', 'RA', 'SN', 'DZ', 'FG', 'FC', 'SS', 'DS', 'SQ', 'VA'
+]
 
-API_KEY = "8e7917816866402688f805f637eb54d3"
-AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
+def check_amendment_criteria(taf, metar):
+    """
+    Compara un TAF (pronóstico) contra un METAR (realidad).
+    Retorna una lista de alertas si se cumplen los criterios de enmienda.
+    """
+    alerts = []
 
-# --- 2. LOGICA DE TIEMPO Y PARSEO ---
+    # 1. VIENTO
+    # Cambio en dirección >= 60° con velocidad >= 10kt
+    dir_diff = abs(taf['wind_dir'] - metar['wind_dir'])
+    if dir_diff >= 60 and (taf['wind_speed'] >= 10 or metar['wind_speed'] >= 10):
+        alerts.append(f"VIENTO: Cambio de dirección de {dir_diff}° (Umbral 60° con >10kt)")
 
-def get_viento_vigente_taf(taf_raw):
-    """Extrae el grupo de viento del TAF que corresponde a la hora actual UTC"""
-    ahora_utc = datetime.now(timezone.utc)
-    hora_actual_int = ahora_utc.hour
-    dia_actual_int = ahora_utc.day
+    # Cambio en velocidad media >= 10kt
+    if abs(taf['wind_speed'] - metar['wind_speed']) >= 10:
+        alerts.append(f"VIENTO: Variación de velocidad media >= 10kt")
 
-    # Dividir TAF por grupos de tiempo (FM, BECMG, TEMPO)
-    partes = re.split(r'\s(?=FM|BECMG|TEMPO)', taf_raw)
-    
-    # El primer grupo es siempre el viento base
-    viento_elegido = partes[0]
-    
-    # Buscamos si hay un grupo FM (From) que ya haya empezado
-    for p in partes:
-        if "FM" in p:
-            match_time = re.search(r'FM(\d{2})(\d{2})(\d{2})', p)
-            if match_time:
-                dia_fm, hora_fm, min_fm = map(int, match_time.groups())
-                # Si ya pasamos esa hora, este es nuestro nuevo viento base
-                if dia_actual_int >= dia_fm and hora_actual_int >= hora_fm:
-                    viento_elegido = p
+    # Variación de ráfagas (Gusts) >= 10kt con media >= 15kt
+    if abs(taf['wind_gust'] - metar['wind_gust']) >= 10:
+        if taf['wind_speed'] >= 15 or metar['wind_speed'] >= 15:
+            alerts.append(f"VIENTO: Variación de ráfagas >= 10kt con viento medio >= 15kt")
 
-    return viento_elegido
+    # 2. VISIBILIDAD HORIZONTAL
+    # Cruce de umbrales operativos
+    for limit in VIS_THRESHOLDS:
+        if (taf['vis'] < limit <= metar['vis']) or (taf['vis'] >= limit > metar['vis']):
+            alerts.append(f"VISIBILIDAD: Cruzó umbral de {limit}m")
 
-def get_weather_icon(metar):
-    if "TS" in metar: return "⛈️"
-    if "RA" in metar or "DZ" in metar: return "🌧️"
-    if "FG" in metar or "BR" in metar: return "🌫️"
-    if "SN" in metar: return "❄️"
-    if "VCTS" in metar: return "🌩️"
-    if "CAVOK" in metar or "SKC" in metar: return "☀️"
-    return "☁️"
+    # 3. NUBOSIDAD (TECHO BKN/OVC)
+    # Cruce de umbrales de altura
+    for limit in CEILING_THRESHOLDS:
+        if (taf['ceiling_alt'] < limit <= metar['ceiling_alt']) or \
+           (taf['ceiling_alt'] >= limit > metar['ceiling_alt']):
+            alerts.append(f"NUBES: Techo cruzó umbral de {limit}ft")
 
-def diff_angular(d1, d2):
-    diff = abs(d1 - d2)
-    return diff if diff <= 180 else 360 - diff
+    # Cambio de cobertura (SCT/FEW a BKN/OVC o viceversa) bajo 1500ft
+    if metar['ceiling_alt'] <= 1500 or taf['ceiling_alt'] <= 1500:
+        if (taf['is_broken_overcast'] != metar['is_broken_overcast']):
+            alerts.append("NUBES: Cambio de cobertura (SCT/FEW <-> BKN/OVC) bajo 1500ft")
 
-def parse_viento(texto):
-    if not texto or "Sin datos" in texto: return None, None, None
-    match = re.search(r'(\d{3})(\d{2,3})(G\d{2,3})?KT', texto)
-    if match:
-        d = int(match.group(1))
-        v = int(match.group(2))
-        g = int(match.group(3)[1:]) if match.group(3) else 0
-        return d, v, g
-    return None, None, None
+    # 4. FENÓMENOS
+    # Compara si el fenómeno cambió (simplificado a presencia/ausencia)
+    for phenom in SIG_PHENOMENA:
+        in_taf = phenom in taf['weather']
+        in_metar = phenom in metar['weather']
+        if in_taf != in_metar:
+            status = "Inicia" if in_metar else "Termina"
+            alerts.append(f"FENÓMENO: {status} {phenom}")
 
-# --- 3. INTERFAZ ---
-st.title("✈️ Vigilancia Operativa FIR SAVC")
-st.write(f"Hora Actual (UTC): **{datetime.now(timezone.utc).strftime('%H:%M')}Z**")
+    return alerts
 
-# Panel de Log
-with st.expander("📝 REGISTRO DE ENMIENDAS SUGERIDAS", expanded=False):
-    if st.session_state.historial_alertas:
-        st.table(pd.DataFrame(st.session_state.historial_alertas).iloc[::-1])
-        if st.button("Limpiar Log"):
-            st.session_state.historial_alertas = []
-            st.rerun()
-    else:
-        st.info("No hay alertas de enmienda activas.")
+# --- EJEMPLO DE USO ---
+taf_ejemplo = {
+    'wind_dir': 120, 'wind_speed': 5, 'wind_gust': 0,
+    'vis': 6000, 'ceiling_alt': 2000, 'is_broken_overcast': False,
+    'weather': []
+}
 
-st.divider()
+metar_ejemplo = {
+    'wind_dir': 190, 'wind_speed': 12, 'wind_gust': 0, # Cambio > 60° y > 10kt
+    'vis': 1200, 'ceiling_alt': 800, # Cruzó 1500m y 1000ft
+    'is_broken_overcast': True,
+    'weather': ['RA'] # Inicia lluvia
+}
 
-# --- 4. PROCESAMIENTO ---
-headers = {"X-API-Key": API_KEY}
-cols = st.columns(2) # Volvemos a 2 para que el texto sea legible
+resultados = check_amendment_criteria(taf_ejemplo, metar_ejemplo)
 
-for i, icao in enumerate(AERODROMOS):
-    with cols[i % 2]:
-        try:
-            res_m = requests.get(f"https://api.checkwx.com/metar/{icao}", headers=headers).json()
-            res_t = requests.get(f"https://api.checkwx.com/taf/{icao}", headers=headers).json()
-            
-            metar = res_m.get('data', ['Sin datos'])[0]
-            taf_full = res_t.get('data', ['Sin datos'])[0]
-            
-            # Analizar periodo del TAF
-            taf_vigente = get_viento_vigente_taf(taf_full)
-            
-            # Datos de viento
-            dr, vr, rr = parse_viento(metar)
-            dt, vt, rt = parse_viento(taf_vigente)
-            
-            alertas = []
-            if vr is not None and vt is not None:
-                # Criterio A: Giro de 60° o más con vto > 10kt
-                if vr >= 10 or vt >= 10:
-                    d_ang = diff_angular(dr, dt)
-                    if d_ang >= 60:
-                        alertas.append(f"🔴 ENMIENDA: Giro {d_ang}° respecto al TAF")
-                
-                # Criterio B: Intensidad dif > 10kt
-                if abs(vr - vt) >= 10:
-                    alertas.append(f"🟠 ENMIENDA: Dif. Velocidad {abs(vr-vt)}kt")
-
-            # UI
-            icon = get_weather_icon(metar)
-            with st.container(border=True):
-                st.subheader(f"{icon} {icao}")
-                
-                col_m, col_t = st.columns(2)
-                col_m.markdown(f"**METAR ACTUAL**\n`{metar}`")
-                col_t.markdown(f"**TAF VIGENTE**\n`{taf_vigente}`")
-                
-                if alertas:
-                    for a in alertas:
-                        st.warning(a)
-                        # Registrar en historial si es nuevo
-                        id_h = f"{icao}_{a[:15]}"
-                        if st.session_state.last_alert_id.get(id_h) != a:
-                            st.session_state.historial_alertas.append({
-                                "Hora": datetime.now().strftime("%H:%M"),
-                                "OACI": icao,
-                                "Motivo": a
-                            })
-                            st.session_state.last_alert_id[id_h] = a
-                else:
-                    st.success("✅ TAF Representativo")
-                
-                with st.expander("Ver TAF Completo"):
-                    st.text(taf_full)
-
-        except Exception as e:
-            st.error(f"Error en {icao}")
-
-st.caption("Nota: El análisis de TAF prioriza el grupo base o cambios tipo 'FM' según la hora UTC actual.")
+if resultados:
+    print("ALERTA DE ENMIENDA REQUERIDA:")
+    for a in resultados:
+        print(f"- {a}")
+else:
+    print("Condiciones dentro de parámetros.")
