@@ -3,175 +3,127 @@ import requests
 import re
 import random
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. CONFIGURACIÓN, TEMAS Y LAYOUT ---
-st.set_page_config(page_title="Vigilancia SAVC v5.7", page_icon="✈️", layout="wide")
+# --- 1. CONFIGURACIÓN ---
+st.set_page_config(page_title="Vigilancia FIR SAVC", page_icon="✈️", layout="wide")
 
-# CSS Base para ocultar menús de desarrollo y limpiar interfaz
-st.markdown("""
-    <style>
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    .stDeployButton {display:none;}
-    [data-testid="stHeader"] {background: rgba(0,0,0,0); color: rgba(0,0,0,0);}
-    .block-container {padding-top: 2rem;}
-    button[title="View source"], button[title="Manage app"], button[title="Settings"] {display: none;}
-    </style>
-""", unsafe_allow_html=True)
+# Inicializar el historial en la memoria de la sesión (se mantiene mientras la pestaña esté abierta)
+if 'historial_alertas' not in st.session_state:
+    st.session_state.historial_alertas = []
 
-# Sidebar
-st.sidebar.title("🛠️ Panel de Control")
-st.sidebar.markdown("---")
-layout_choice = st.sidebar.radio("Disposición de Pantalla:", ["Ancho (Grilla)", "Centrado (Lista)"])
-theme_choice = st.sidebar.radio("Modo de Visión:", ["☀️ Día", "🌙 Noche"])
+# ESTILO PARA OCULTAR LO QUE NO SIRVE
+hide_st_style = """
+            <style>
+            .stDeployButton {display:none;}
+            footer {visibility: hidden;}
+            .st-emotion-cache-1wbqy5l {display:none;}
+            .block-container {padding-top: 1rem;}
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
 
-# Lógica de Contraste y Colores
-if theme_choice == "🌙 Noche":
-    bg_color = "#0e1117"
-    text_color = "#ffffff"
-    card_bg = "#1f2937"
-    st.markdown(f"""
-        <style>
-        .stApp {{ background-color: {bg_color}; color: {text_color}; }}
-        .stCode {{ background-color: #2d3748 !important; color: #e2e8f0 !important; border: 1px solid #4a5568 !important; }}
-        .stExpander {{ background-color: {card_bg} !important; border: 1px solid #374151; }}
-        h1, h2, h3, h4, p, span, label, .stMarkdown {{ color: {text_color} !important; }}
-        </style>
-    """, unsafe_allow_html=True)
-else:
-    # MODO DÍA: Blanco Puro con Alto Contraste para Mensajes
-    st.markdown("""
-        <style>
-        .stApp { background-color: #FFFFFF; color: #000000; }
-        /* Forzar contraste en bloques de código */
-        .stCode { background-color: #F1F3F5 !important; border: 2px solid #CED4DA !important; color: #212529 !important; }
-        /* Bordes definidos para Alertas y Éxitos */
-        div[data-testid="stNotification"] {
-            border: 1px solid #ADB5BD !important;
-            box-shadow: 0px 2px 4px rgba(0,0,0,0.1);
-        }
-        /* Resaltar bordes de los expanders */
-        .stExpander { border: 1px solid #ADB5BD !important; background-color: #FFFFFF !important; }
-        h1, h2, h3, h4, p, span, label { color: #000000 !important; }
-        </style>
-    """, unsafe_allow_html=True)
-
-if layout_choice == "Centrado (Lista)":
-    st.markdown("""<style>.block-container {max-width: 900px;}</style>""", unsafe_allow_html=True)
-
-if 'log_alertas' not in st.session_state:
-    st.session_state.log_alertas = []
-
-st_autorefresh(interval=180000, key="auto_refresh")
+# Refresco cada 2 minutos
+st_autorefresh(interval=120000, key="datarefresh")
 
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
-# --- 2. MOTOR DE PROCESAMIENTO ---
+# --- 2. FUNCIONES TÉCNICAS ---
+def diff_angular(d1, d2):
+    diff = abs(d1 - d2)
+    return diff if diff <= 180 else 360 - diff
 
-def get_token_vis(texto):
-    if any(x in texto for x in ["CAVOK", "SKC", "NSC", "CLR"]): return 9999
-    t_limpio = re.sub(r'\d{4}/\d{4}', '', texto)
-    tokens = t_limpio.split()
-    for t in tokens:
-        if "/" in t or "Z" in t or t.startswith("FM") or len(t) != 4: continue
-        if re.fullmatch(r'\d{4}', t): return int(t)
-    return 9999
+def parse_viento(texto):
+    if not texto or "Sin datos" in texto: return None, None, None
+    match = re.search(r'(\d{3})(\d{2,3})(G\d{2,3})?KT', texto)
+    if match:
+        return int(match.group(1)), int(match.group(2)), (int(match.group(3)[1:]) if match.group(3) else 0)
+    return None, None, None
 
-def obtener_bloque_vigente(taf_raw):
-    ahora = datetime.now(timezone.utc)
-    ref = ahora.day * 10000 + ahora.hour * 100 + ahora.minute
-    cuerpo = re.sub(r'^(TAF\s+)?([A-Z]{4})\s+\d{6}Z\s+', '', taf_raw)
-    partes = re.split(r'\b(FM|BECMG|TEMPO|PROB\d{2})\b', cuerpo)
-    vigente = partes[0]
-    for i in range(1, len(partes), 2):
-        ind, cont = partes[i], partes[i+1]
-        m_r = re.search(r'(\d{2})(\d{2})/(\d{2})(\d{2})', cont)
-        m_f = re.search(r'FM(\d{2})(\d{2})(\d{2})', cont)
-        valido = False
-        if m_r:
-            di, hi, df, hf = map(int, m_r.groups())
-            if (di * 10000 + hi * 100) <= ref < (df * 10000 + hf * 100): valido = True
-        elif m_f:
-            di, hi, mi = map(int, m_f.groups())
-            if ref >= (di * 10000 + hi * 100 + mi): valido = True
-        if valido: vigente = f"{ind} {cont}" if ind != "FM" else f"FM {cont}"
-    return vigente.strip()
-
-def get_clima_icon(metar):
-    if "TS" in metar: return "⛈️"
-    if "RA" in metar or "DZ" in metar: return "🌧️"
-    if "FG" in metar or "BR" in metar: return "🌫️"
-    if "CAVOK" in metar: return "☀️"
-    return "✈️"
-
-# --- 3. AUDITORÍA ---
-
-def auditar_v57(icao, metar, taf):
-    p_vigente = obtener_bloque_vigente(taf)
+def auditar(icao, reporte, taf):
     alertas = []
-    vm, vp = get_token_vis(metar), get_token_vis(p_vigente)
-    umbrales_v = [150, 350, 600, 800, 1500, 3000, 5000]
-    ev_m = next((i for i, u in enumerate(umbrales_v) if vm < u), 8)
-    ev_p = next((i for i, u in enumerate(umbrales_v) if vp < u), 8)
-    if ev_m != ev_p and not (vm >= 9999 and vp >= 5000):
-        alertas.append(f"VIS: Cambio umbral SMN (M: {vm}m / TAF: {vp}m)")
+    dr, vr, rr = parse_viento(reporte)
+    dt, vt, rt = parse_viento(taf)
+    if vr is not None and vt is not None:
+        if vr >= 10 or vt >= 10:
+            d_ang = diff_angular(dr, dt)
+            if d_ang >= 60:
+                msg = f"CRIT A: Giro {d_ang}°"
+                alertas.append(msg)
+                # Registro automático
+                st.session_state.historial_alertas.append({
+                    "H_Local": datetime.now().strftime("%H:%M:%S"), 
+                    "OACI": icao, 
+                    "Alerta": "GIRO VTO", 
+                    "Valor": f"{d_ang}°"
+                })
+        
+        if abs(vr - vt) >= 10:
+            msg = f"CRIT B: Dif Int {abs(vr-vt)}kt"
+            alertas.append(msg)
+            st.session_state.historial_alertas.append({
+                "H_Local": datetime.now().strftime("%H:%M:%S"), 
+                "OACI": icao, 
+                "Alerta": "INTENSIDAD", 
+                "Valor": f"{abs(vr-vt)}kt"
+            })
+    return alertas
 
-    def get_c(t):
-        capas = re.findall(r'\b(BKN|OVC)(\d{3})\b', t)
-        return min(int(c[1]) * 100 for c in capas) if capas else 9999
-    nm, np = get_c(metar), get_c(p_vigente)
-    for u in [100, 200, 500, 1000, 1500]:
-        if (nm < u <= np) or (np < u <= nm):
-            alertas.append(f"NUBES: Techo cruzó {u}ft")
-            break
-    return alertas, p_vigente
+# --- 3. INTERFAZ ---
+st.title("🖥️ Vigilancia FIR SAVC")
 
-# --- 4. INTERFAZ ---
-st.title("🖥️ Vigilancia Meteorológica FIR SAVC")
-st.write(f"**Actualización UTC:** {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
+# --- PANEL DE RESPALDO (AHORA EN EL CENTRO ARRIBA) ---
+with st.container():
+    if st.session_state.historial_alertas:
+        st.subheader("📊 Registro de Desvíos del Turno")
+        df_log = pd.DataFrame(st.session_state.historial_alertas)
+        
+        # Mostramos una tabla pequeña con los últimos 5 desvíos
+        st.table(df_log.tail(5))
+        
+        col_btn1, col_btn2 = st.columns([1, 4])
+        with col_btn1:
+            csv = df_log.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 DESCARGAR LOG CSV",
+                data=csv,
+                file_name=f"vigilancia_SAVC_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime='text/csv',
+            )
+        with col_btn2:
+            if st.button("🗑️ Limpiar historial"):
+                st.session_state.historial_alertas = []
+                st.rerun()
+    else:
+        st.info("🔎 No se han detectado desvíos en el ciclo actual. El registro está vacío.")
 
+st.divider()
+st.write(f"Sincronizado: **{datetime.now().strftime('%H:%M:%S')}**")
+
+# Grilla de Aeródromos
 cols = st.columns(2)
 headers = {"X-API-Key": API_KEY}
 
 for i, icao in enumerate(AERODROMOS):
     try:
-        r_id = random.randint(1, 99999)
-        m_r = requests.get(f"https://api.checkwx.com/metar/{icao}?cache={r_id}", headers=headers).json().get('data',['-'])[0]
-        t_r = requests.get(f"https://api.checkwx.com/taf/{icao}?cache={r_id}", headers=headers).json().get('data',['-'])[0]
+        r_hash = random.randint(1, 999999)
+        res_m = requests.get(f"https://api.checkwx.com/metar/{icao}?cache={r_hash}", headers=headers).json()
+        metar = res_m.get('data', ['Sin datos'])[0]
         
-        if m_r != '-' and t_r != '-':
-            alertas, p_vigente = auditar_v57(icao, m_r, t_r)
-            icon_alert = "🟥" if alertas else "✅"
-            weather_icon = get_clima_icon(m_r)
-            
-            with cols[i % 2]:
-                with st.expander(f"{icon_alert} {weather_icon} {icao}", expanded=True):
-                    st.markdown("**INFORME TAF VIGENTE:**")
-                    st.code(p_vigente, language=None)
-                    st.markdown("**METAR ACTUAL:**")
-                    st.success(m_r)
-                    for a in alertas:
-                        st.error(a)
-                        if not any(l['OACI']==icao and l['Alerta']==a for l in st.session_state.log_alertas[-3:]):
-                            st.session_state.log_alertas.append({"Hora": datetime.now().strftime("%H:%M"), "OACI": icao, "Alerta": a})
-                    st.caption(f"Ref TAF: {t_r}")
-    except:
-        st.error(f"Error {icao}")
+        res_t = requests.get(f"https://api.checkwx.com/taf/{icao}?cache={r_hash}", headers=headers).json()
+        taf = res_t.get('data', ['Sin datos'])[0]
+        
+        alertas = auditar(icao, metar, taf) if "Sin datos" not in [metar, taf] else []
 
-# --- 5. LOG Y CRÉDITOS ---
-if st.session_state.log_alertas:
-    st.divider()
-    with st.expander("📊 Log de Novedades del Turno"):
-        st.table(pd.DataFrame(st.session_state.log_alertas).tail(10))
-
-st.markdown(f"""
-    <hr>
-    <div style="text-align: center; color: #777; font-size: 0.9rem; padding-bottom: 40px;">
-        <b>SISTEMA DE VIGILANCIA AERONÁUTICA SAVC</b><br>
-        Desarrollado en colaboración por <b>Gemini AI</b> & <b>Despachante de Aeronaves</b><br>
-        © {datetime.now().year} - Comodoro Rivadavia, Chubut.
-    </div>
-""", unsafe_allow_html=True)
+        with cols[i % 2]:
+            estado = "⚠️ ALERTA" if alertas else "✅ OK"
+            with st.expander(f"📍 {icao} - {estado}", expanded=True):
+                st.caption("TAF:")
+                st.code(taf)
+                st.markdown(f"**ACTUAL:** `{metar}`")
+                for a in alertas:
+                    st.error(a)
+    except Exception:
+        st.error(f"Falla de conexión en {icao}")
