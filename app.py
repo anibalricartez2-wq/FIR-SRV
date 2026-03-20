@@ -7,24 +7,24 @@ from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. CONFIGURACIÓN, TEMAS Y LAYOUT ---
-st.set_page_config(page_title="Vigilancia SAVC v5.4", page_icon="✈️", layout="wide")
+st.set_page_config(page_title="Vigilancia SAVC v5.5", page_icon="✈️", layout="wide")
 
-# Ocultar menús de código, deploy y decoraciones de Streamlit
+# Ocultar solo lo innecesario (Deploy y Footer), manteniendo el Sidebar funcional
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
     .stDeployButton {display:none;}
-    [data-testid="stHeader"] {display: none;}
-    .reportview-container .main .block-container {padding-top: 0rem;}
+    /* Ajuste para que el contenido empiece bien arriba */
+    .block-container {padding-top: 1rem; padding-bottom: 1rem;}
     </style>
 """, unsafe_allow_html=True)
 
 # Selector de Pantalla y Tema en barra lateral
-st.sidebar.title("Configuración SAVC")
-layout_choice = st.sidebar.radio("Disposición:", ["Ancho (Grilla)", "Centrado (Lista)"])
-theme_choice = st.sidebar.radio("Modo Operativo:", ["☀️ Día", "🌙 Noche"])
+st.sidebar.title("🛠️ Panel de Control")
+st.sidebar.markdown("---")
+layout_choice = st.sidebar.radio("Disposición de Pantalla:", ["Ancho (Grilla)", "Centrado (Lista)"])
+theme_choice = st.sidebar.radio("Modo de Visión:", ["☀️ Día", "🌙 Noche"])
 
 # Lógica de colores según el tema
 if theme_choice == "🌙 Noche":
@@ -36,7 +36,9 @@ if theme_choice == "🌙 Noche":
         .stApp {{ background-color: {bg_color}; color: {text_color}; }}
         .stCode {{ background-color: #2d3748 !important; color: #e2e8f0 !important; }}
         .stExpander {{ background-color: {card_bg} !important; border: 1px solid #374151; }}
-        h1, h2, h3, h4, p, span, label {{ color: {text_color} !important; }}
+        h1, h2, h3, h4, p, span, label, .stMarkdown {{ color: {text_color} !important; }}
+        /* Asegurar que el texto de los expanders sea blanco en modo noche */
+        .streamlit-expanderHeader {{ color: {text_color} !important; }}
         </style>
     """, unsafe_allow_html=True)
 else:
@@ -54,10 +56,11 @@ st_autorefresh(interval=180000, key="auto_refresh")
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
-# --- 2. MOTOR DE PROCESAMIENTO ---
+# --- 2. MOTOR DE PROCESAMIENTO (FILTRO DE TOKENS) ---
 
 def get_token_vis(texto):
     if any(x in texto for x in ["CAVOK", "SKC", "NSC", "CLR"]): return 9999
+    # Limpiamos específicamente los rangos de tiempo con barra
     t_limpio = re.sub(r'\d{4}/\d{4}', '', texto)
     tokens = t_limpio.split()
     for t in tokens:
@@ -92,9 +95,9 @@ def get_clima_icon(metar):
     if "CAVOK" in metar: return "☀️"
     return "✈️"
 
-# --- 3. AUDITORÍA (CRITERIOS SMN) ---
+# --- 3. AUDITORÍA ---
 
-def auditar_v54(icao, metar, taf):
+def auditar_v55(icao, metar, taf):
     p_vigente = obtener_bloque_vigente(taf)
     alertas = []
     vm, vp = get_token_vis(metar), get_token_vis(p_vigente)
@@ -115,8 +118,8 @@ def auditar_v54(icao, metar, taf):
     return alertas, p_vigente
 
 # --- 4. INTERFAZ ---
-st.title("🖥️ Auditoría Meteorológica FIR SAVC")
-st.write(f"Actualización UTC: {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
+st.title("🖥️ Vigilancia Meteorológica FIR SAVC")
+st.write(f"**Actualización UTC:** {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
 
 cols = st.columns(2)
 headers = {"X-API-Key": API_KEY}
@@ -128,7 +131,7 @@ for i, icao in enumerate(AERODROMOS):
         t_r = requests.get(f"https://api.checkwx.com/taf/{icao}?cache={r_id}", headers=headers).json().get('data',['-'])[0]
         
         if m_r != '-' and t_r != '-':
-            alertas, p_vigente = auditar_v54(icao, m_r, t_r)
+            alertas, p_vigente = auditar_v55(icao, m_r, t_r)
             icon_alert = "🟥" if alertas else "✅"
             weather_icon = get_clima_icon(m_r)
             
@@ -146,7 +149,7 @@ for i, icao in enumerate(AERODROMOS):
     except:
         st.error(f"Error {icao}")
 
-# --- 5. LOG Y CRÉDITOS FINALES ---
+# --- 5. LOG Y CRÉDITOS ---
 if st.session_state.log_alertas:
     st.divider()
     with st.expander("📊 Log de Novedades del Turno"):
@@ -154,9 +157,9 @@ if st.session_state.log_alertas:
 
 st.markdown(f"""
     <hr>
-    <div style="text-align: center; color: #777; font-size: 0.9rem; padding-bottom: 40px; line-height: 1.6;">
+    <div style="text-align: center; color: #777; font-size: 0.9rem; padding-bottom: 40px;">
         <b>SISTEMA DE VIGILANCIA AERONÁUTICA SAVC</b><br>
-        Desarrollado en colaboración por <b>Gemini AI</b> & <b>Despachante de Aeronaves</b><br>
+        Desarrollado en colaboración por <b>Gemini AI</b> & <b>ANIBAL RICARTEZ</b><br>
         © {datetime.now().year} - Comodoro Rivadavia, Chubut.
     </div>
 """, unsafe_allow_html=True)
