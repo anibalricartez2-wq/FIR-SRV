@@ -9,28 +9,44 @@ from streamlit_autorefresh import st_autorefresh
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Vigilancia FIR SAVC", page_icon="✈️", layout="wide")
 
-# Inicializar el historial en la memoria de la sesión (se mantiene mientras la pestaña esté abierta)
+# Inicializar el historial en la memoria de la sesión
 if 'historial_alertas' not in st.session_state:
     st.session_state.historial_alertas = []
 
-# ESTILO PARA OCULTAR LO QUE NO SIRVE
+# ESTILO CSS
 hide_st_style = """
             <style>
             .stDeployButton {display:none;}
             footer {visibility: hidden;}
             .st-emotion-cache-1wbqy5l {display:none;}
             .block-container {padding-top: 1rem;}
+            .copyright { text-align: center; color: #888; font-size: 0.8rem; margin-top: 50px; border-top: 1px solid #444; padding-top: 10px; }
             </style>
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
-# Refresco cada 2 minutos
-st_autorefresh(interval=120000, key="datarefresh")
+# 1. REFRESH ACTUALIZADO A 30 MINUTOS (30 * 60 * 1000 ms)
+st_autorefresh(interval=1800000, key="datarefresh")
 
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
 # --- 2. FUNCIONES TÉCNICAS ---
+
+def obtener_icono_clima(metar_text):
+    """Mapeo de fenómenos meteorológicos a iconos visuales"""
+    if "TS" in metar_text: return "⛈️" 
+    if "VA" in metar_text: return "🌋" # Ceniza volcánica
+    if "RA" in metar_text or "DZ" in metar_text: return "🌧️"
+    if "SN" in metar_text: return "❄️"
+    if "FG" in metar_text or "BR" in metar_text: return "🌫️"
+    if "HZ" in metar_text or "FU" in metar_text: return "🌫️"
+    if "VCTS" in metar_text: return "⚡" # Tormentas en las cercanías
+    if "SKC" in metar_text or "CLR" in metar_text or "NSC" in metar_text: return "☀️"
+    if "BKN" in metar_text or "OVC" in metar_text: return "☁️"
+    if "SCT" in metar_text or "FEW" in metar_text: return "⛅"
+    return "✈️"
+
 def diff_angular(d1, d2):
     diff = abs(d1 - d2)
     return diff if diff <= 180 else 360 - diff
@@ -52,7 +68,6 @@ def auditar(icao, reporte, taf):
             if d_ang >= 60:
                 msg = f"CRIT A: Giro {d_ang}°"
                 alertas.append(msg)
-                # Registro automático
                 st.session_state.historial_alertas.append({
                     "H_Local": datetime.now().strftime("%H:%M:%S"), 
                     "OACI": icao, 
@@ -74,13 +89,10 @@ def auditar(icao, reporte, taf):
 # --- 3. INTERFAZ ---
 st.title("🖥️ Vigilancia FIR SAVC")
 
-# --- PANEL DE RESPALDO (AHORA EN EL CENTRO ARRIBA) ---
 with st.container():
     if st.session_state.historial_alertas:
         st.subheader("📊 Registro de Desvíos del Turno")
         df_log = pd.DataFrame(st.session_state.historial_alertas)
-        
-        # Mostramos una tabla pequeña con los últimos 5 desvíos
         st.table(df_log.tail(5))
         
         col_btn1, col_btn2 = st.columns([1, 4])
@@ -97,10 +109,10 @@ with st.container():
                 st.session_state.historial_alertas = []
                 st.rerun()
     else:
-        st.info("🔎 No se han detectado desvíos en el ciclo actual. El registro está vacío.")
+        st.info("🔎 No se han detectado desvíos. Actualización automática cada 30 min.")
 
 st.divider()
-st.write(f"Sincronizado: **{datetime.now().strftime('%H:%M:%S')}**")
+st.write(f"Última Sincronización: **{datetime.now().strftime('%H:%M:%S')}**")
 
 # Grilla de Aeródromos
 cols = st.columns(2)
@@ -116,14 +128,26 @@ for i, icao in enumerate(AERODROMOS):
         taf = res_t.get('data', ['Sin datos'])[0]
         
         alertas = auditar(icao, metar, taf) if "Sin datos" not in [metar, taf] else []
+        icono = obtener_icono_clima(metar)
 
         with cols[i % 2]:
             estado = "⚠️ ALERTA" if alertas else "✅ OK"
-            with st.expander(f"📍 {icao} - {estado}", expanded=True):
-                st.caption("TAF:")
+            with st.expander(f"{icono} {icao} - {estado}", expanded=True):
+                st.caption("TAF VIGENTE:")
                 st.code(taf)
-                st.markdown(f"**ACTUAL:** `{metar}`")
+                st.markdown(f"**METAR ACTUAL:** `{metar}`")
                 for a in alertas:
                     st.error(a)
     except Exception:
         st.error(f"Falla de conexión en {icao}")
+
+# DERECHOS DE AUTOR
+st.markdown(
+    f"""
+    <div class="copyright">
+        © {datetime.now().year} - Sistema de Vigilancia Meteorológica <br>
+        Desarrollado por <b>ANIBAL RICARTEZ</b> & <b>Gemini AI</b>. Todos los derechos reservados.
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
