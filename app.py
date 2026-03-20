@@ -6,12 +6,13 @@ import pandas as pd
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. CONFIGURACIÓN ---
+# --- 1. CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Vigilancia FIR SAVC", page_icon="✈️", layout="wide")
 
 if 'historial_alertas' not in st.session_state:
     st.session_state.historial_alertas = []
 
+# CSS para limpieza visual
 hide_st_style = """
             <style>
             .stDeployButton {display:none;}
@@ -23,18 +24,19 @@ hide_st_style = """
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
-# Refresco cada 30 minutos (1.800.000 ms)
+# Auto-refresco cada 30 minutos
 st_autorefresh(interval=1800000, key="datarefresh")
 
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
-# --- 2. MOTOR DE LÓGICA Y TIEMPO ---
+# --- 2. FUNCIONES DE PROCESAMIENTO ---
 
 def obtener_periodo_vigente(taf_text):
-    """Filtra el TAF para encontrar el grupo (FM/BECMG/TEMPO) que aplica ahora mismo"""
+    """Extrae la sección del TAF que aplica a la hora UTC actual"""
     ahora_utc = datetime.now(timezone.utc)
     h_actual, d_actual = ahora_utc.hour, ahora_utc.day
+    # Separar por grupos de cambio
     partes = re.split(r'\b(FM|BECMG|TEMPO|PROB\d{2})\b', taf_text)
     vigente = partes[0] # Base por defecto
     
@@ -43,6 +45,7 @@ def obtener_periodo_vigente(taf_text):
         match = re.search(r'(\d{2})(\d{2})/(\d{2})(\d{2})', contenido)
         if match:
             d_i, h_i, d_f, h_f = map(int, match.groups())
+            # Verificamos si la hora actual cae dentro del rango del grupo
             if d_i <= d_actual <= d_f:
                 if h_i <= h_actual < h_f:
                     vigente = f"{indicador} {contenido}"
@@ -62,28 +65,29 @@ def parse_visibilidad(texto):
     return int(match.group(1)) if match else 9999
 
 def parse_nubes(texto):
+    # Criterio SMN: Solo bases BKN u OVC
     capas = re.findall(r'\b(BKN|OVC)(\d{3})\b', texto)
     return min(int(c[1]) * 100 for c in capas) if capas else 9999
 
 def extraer_fenos(texto):
+    """Detecta códigos de fenómenos e intensidades +/-"""
     codigos = ["TS", "VA", "RA", "SN", "DZ", "FG", "BR", "HZ", "FU", "SQ", "FC", "FZRA"]
     palabras = texto.split()
     return set(p for p in palabras if any(c in p.replace("+","").replace("-","") for c in codigos) and len(p) <= 5)
 
-def obtener_icono_condicion(metar_text):
+def obtener_icono_clima(metar_text):
+    """Asigna icono según fenómeno principal e intensidad"""
     icon_cond = "✈️"
     icon_int = "⚠️ " if "+" in metar_text else ""
-    
     if "TS" in metar_text: icon_cond = "⛈️"
     elif "VA" in metar_text: icon_cond = "🌋"
-    elif "SN" in metar_text: icon_cond = "❄️"
     elif "RA" in metar_text or "DZ" in metar_text: icon_cond = "🌧️"
+    elif "SN" in metar_text: icon_cond = "❄️"
     elif "FG" in metar_text or "BR" in metar_text: icon_cond = "🌫️"
     elif "SQ" in metar_text: icon_cond = "💨"
     elif "CAVOK" in metar_text or "SKC" in metar_text: icon_cond = "☀️"
     elif "BKN" in metar_text or "OVC" in metar_text: icon_cond = "☁️"
     elif "SCT" in metar_text or "FEW" in metar_text: icon_cond = "⛅"
-    
     return f"{icon_int}{icon_cond}"
 
 def auditar(icao, metar, taf_completo):
@@ -108,7 +112,7 @@ def auditar(icao, metar, taf_completo):
             enmiendas.append(f"VIS: Pasó umbral {u}m")
             break
 
-    # 3. NUBES (BKN/OVC)
+    # 3. TECHOS
     for u in [100, 200, 500, 1000, 1500]:
         if (nm <= u < np) or (np <= u < nm):
             enmiendas.append(f"NUBES: Techo pasó {u}ft")
@@ -121,24 +125,5 @@ def auditar(icao, metar, taf_completo):
 
     return enmiendas, periodo
 
-# --- 3. INTERFAZ ---
-st.title("🖥️ Vigilancia FIR SAVC - Auditoría SMN")
-
-cols = st.columns(2)
-headers = {"X-API-Key": API_KEY}
-
-for i, icao in enumerate(AERODROMOS):
-    try:
-        r_hash = random.randint(1, 999999)
-        url_m = f"https://api.checkwx.com/metar/{icao}?cache={r_hash}"
-        url_t = f"https://api.checkwx.com/taf/{icao}?cache={r_hash}"
-        
-        m_res = requests.get(url_m, headers=headers).json().get('data', ['-'])[0]
-        t_res = requests.get(url_t, headers=headers).json().get('data', ['-'])[0]
-        
-        if m_res != '-' and t_res != '-':
-            alertas, periodo_v = auditar(icao, m_res, t_res)
-            icon_clima = obtener_icono_condicion(m_res)
-            icon_alerta = "🟥 " if alertas else ""
-            
-            with cols
+# --- 3. INTERFAZ DE USUARIO ---
+st.title("🖥️ Monitor de Vigilancia Meteor
