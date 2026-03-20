@@ -124,4 +124,54 @@ def auditar_v57(icao, metar, taf):
         return min(int(c[1]) * 100 for c in capas) if capas else 9999
     nm, np = get_c(metar), get_c(p_vigente)
     for u in [100, 200, 500, 1000, 1500]:
-        if (nm < u <= np) or (np < u
+        if (nm < u <= np) or (np < u <= nm):
+            alertas.append(f"NUBES: Techo cruzó {u}ft")
+            break
+    return alertas, p_vigente
+
+# --- 4. INTERFAZ ---
+st.title("🖥️ Vigilancia Meteorológica FIR SAVC")
+st.write(f"**Actualización UTC:** {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
+
+cols = st.columns(2)
+headers = {"X-API-Key": API_KEY}
+
+for i, icao in enumerate(AERODROMOS):
+    try:
+        r_id = random.randint(1, 99999)
+        m_r = requests.get(f"https://api.checkwx.com/metar/{icao}?cache={r_id}", headers=headers).json().get('data',['-'])[0]
+        t_r = requests.get(f"https://api.checkwx.com/taf/{icao}?cache={r_id}", headers=headers).json().get('data',['-'])[0]
+        
+        if m_r != '-' and t_r != '-':
+            alertas, p_vigente = auditar_v57(icao, m_r, t_r)
+            icon_alert = "🟥" if alertas else "✅"
+            weather_icon = get_clima_icon(m_r)
+            
+            with cols[i % 2]:
+                with st.expander(f"{icon_alert} {weather_icon} {icao}", expanded=True):
+                    st.markdown("**INFORME TAF VIGENTE:**")
+                    st.code(p_vigente, language=None)
+                    st.markdown("**METAR ACTUAL:**")
+                    st.success(m_r)
+                    for a in alertas:
+                        st.error(a)
+                        if not any(l['OACI']==icao and l['Alerta']==a for l in st.session_state.log_alertas[-3:]):
+                            st.session_state.log_alertas.append({"Hora": datetime.now().strftime("%H:%M"), "OACI": icao, "Alerta": a})
+                    st.caption(f"Ref TAF: {t_r}")
+    except:
+        st.error(f"Error {icao}")
+
+# --- 5. LOG Y CRÉDITOS ---
+if st.session_state.log_alertas:
+    st.divider()
+    with st.expander("📊 Log de Novedades del Turno"):
+        st.table(pd.DataFrame(st.session_state.log_alertas).tail(10))
+
+st.markdown(f"""
+    <hr>
+    <div style="text-align: center; color: #777; font-size: 0.9rem; padding-bottom: 40px;">
+        <b>SISTEMA DE VIGILANCIA AERONÁUTICA SAVC</b><br>
+        Desarrollado en colaboración por <b>Gemini AI</b> & <b>Despachante de Aeronaves</b><br>
+        © {datetime.now().year} - Comodoro Rivadavia, Chubut.
+    </div>
+""", unsafe_allow_html=True)
