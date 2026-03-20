@@ -19,7 +19,6 @@ hide_st_style = """
             .st-emotion-cache-1wbqy5l {display:none;}
             .block-container {padding-top: 1rem;}
             .copyright { text-align: center; color: #888; font-size: 0.8rem; margin-top: 50px; border-top: 1px solid #444; padding-top: 10px; }
-            .taf-box { background-color: #f0f2f6; padding: 10px; border-radius: 5px; border-left: 5px solid #007bff; margin-bottom: 10px; }
             </style>
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
@@ -30,26 +29,24 @@ st_autorefresh(interval=1800000, key="datarefresh")
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
-# --- 2. LÓGICA DE PARSEO TEMPORAL ---
+# --- 2. LÓGICA DE PARSEO Y TIEMPO ---
 
 def obtener_periodo_vigente(taf_text):
     ahora_utc = datetime.now(timezone.utc)
-    hora_actual = ahora_utc.hour
-    dia_actual = ahora_utc.day
+    h_actual = ahora_utc.hour
+    d_actual = ahora_utc.day
     
-    # Dividimos el TAF por grupos de cambio
     partes = re.split(r'\b(FM|BECMG|TEMPO|PROB\d{2})\b', taf_text)
-    vigente = partes[0] # Por defecto la base
+    vigente = partes[0] # Base por defecto
     
     for i in range(1, len(partes), 2):
         indicador = partes[i]
         contenido = partes[i+1]
-        # Buscamos el rango horario (ej: 2012/2014)
         match = re.search(r'(\d{2})(\d{2})/(\d{2})(\d{2})', contenido)
         if match:
-            d_ini, h_ini, d_fin, h_fin = map(int, match.groups())
-            if d_ini <= dia_actual <= d_fin:
-                if h_ini <= hora_actual < h_fin:
+            d_i, h_i, d_f, h_f = map(int, match.groups())
+            if d_i <= d_actual <= d_f:
+                if h_i <= h_actual < h_f:
                     vigente = f"{indicador} {contenido}"
     return vigente.strip()
 
@@ -75,40 +72,39 @@ def auditar(icao, metar, taf_completo):
     periodo = obtener_periodo_vigente(taf_completo)
     enmiendas = []
     
-    # Datos para comparar
+    # Datos comparativos
     dr, vr, gr = parse_viento(metar)
     dt, vt, gt = parse_viento(periodo)
-    vm, vt_vis = parse_visibilidad(metar), parse_visibilidad(periodo)
-    nm, nt = parse_nubes(metar), parse_nubes(periodo)
-    fm, ft = extraer_fenos(metar), extraer_fenos(periodo)
+    vm, v_prev = parse_visibilidad(metar), parse_visibilidad(periodo)
+    nm, n_prev = parse_nubes(metar), parse_nubes(periodo)
+    fm, f_prev = extraer_fenos(metar), extraer_fenos(periodo)
 
-    # Viento (Giro 60° o Int 10kt)
+    # Viento
     if vr is not None and vt is not None:
-        if (vr >= 10 or vt >= 10) and abs(dr - dt) >= 60: enmiendas.append(f"VIENTO: Giro >= 60°")
-        if abs(vr - vt) >= 10: enmiendas.append(f"VIENTO: Dif. Vel. >= 10kt")
+        if (vr >= 10 or vt >= 10) and abs(dr - dt) >= 60: enmiendas.append("VIENTO: Giro >= 60°")
+        if abs(vr - vt) >= 10: enmiendas.append("VIENTO: Dif. Vel. >= 10kt")
     
     # Visibilidad (Umbrales SMN)
     for u in [150, 350, 600, 800, 1500, 3000, 5000]:
-        if (vm <= u < vt_vis) or (vt_vis <= u < vm):
+        if (vm <= u < v_prev) or (v_prev <= u < vm):
             enmiendas.append(f"VIS: Pasó umbral {u}m")
             break
 
     # Techos
     for u in [100, 200, 500, 1000, 1500]:
-        if (nm <= u < nt) or (nt <= u < nm):
+        if (nm <= u < n_prev) or (n_prev <= u < nm):
             enmiendas.append(f"NUBES: Techo pasó {u}ft")
             break
 
     # Fenómenos
-    cambios = fm.symmetric_difference(ft)
-    if cambios:
-        for c in cambios:
-            enmiendas.append(f"FENÓMENO: Cambio en {c}")
+    diff = fm.symmetric_difference(f_prev)
+    if diff:
+        for c in diff: enmiendas.append(f"FENÓMENO: Cambio en {c}")
 
     return enmiendas, periodo
 
 # --- 3. INTERFAZ ---
-st.title("🖥️ Monitor FIR SAVC - Vigilancia por Periodo")
+st.title("🖥️ Vigilancia FIR SAVC - Comparativa Temporal")
 
 cols = st.columns(2)
 headers = {"X-API-Key": API_KEY}
@@ -125,4 +121,29 @@ for i, icao in enumerate(AERODROMOS):
             
             with cols[i % 2]:
                 with st.expander(f"{icao} - {estado}", expanded=True):
-                    # T
+                    # 1. TAF COMPLETO
+                    st.markdown("**TAF COMPLETO:**")
+                    st.caption(t_raw)
+                    
+                    st.divider()
+                    
+                    # 2. PERIODO VIGENTE (LO QUE EL BOT MIRA)
+                    st.markdown(f"**PERIODO ANALIZADO (Basado en hora UTC):**")
+                    st.code(periodo_v)
+                    
+                    # 3. METAR
+                    st.markdown(f"**METAR ACTUAL:**")
+                    st.success(m_raw)
+                    
+                    for a in alertas:
+                        st.error(a)
+                        if not st.session_state.historial_alertas or st.session_state.historial_alertas[-1]['Criterio'] != a:
+                            st.session_state.historial_alertas.append({"Hora": datetime.now().strftime("%H:%M"), "OACI": icao, "Criterio": a})
+    except:
+        st.error(f"Falla de conexión en {icao}")
+
+if st.session_state.historial_alertas:
+    with st.expander("📊 Log del Turno"):
+        st.table(pd.DataFrame(st.session_state.historial_alertas).tail(10))
+
+st.markdown(f'<div class="copyright">© {datetime.now().year} - Usuario & Gemini AI. Auditoría estricta según Tabla SMN.</div>', unsafe_allow_html=True)
