@@ -23,32 +23,38 @@ hide_st_style = """
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
 
-# Refresco automático cada 30 minutos (1.800.000 ms)
+# Refresco cada 30 minutos (1.800.000 ms)
 st_autorefresh(interval=1800000, key="datarefresh")
 
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
-# --- 2. MOTOR DE LÓGICA (TIEMPO Y CRITERIOS) ---
+# --- 2. MOTOR DE LÓGICA Y TIEMPO ---
 
 def obtener_periodo_vigente(taf_text):
-    """Detecta el grupo TAF (FM/BECMG/TEMPO) que aplica AHORA en UTC"""
+    """Filtra el TAF para encontrar el grupo (FM/BECMG/TEMPO) que aplica ahora mismo"""
     ahora_utc = datetime.now(timezone.utc)
     h_actual, d_actual = ahora_utc.hour, ahora_utc.day
     partes = re.split(r'\b(FM|BECMG|TEMPO|PROB\d{2})\b', taf_text)
-    vigente = partes[0] 
+    vigente = partes[0] # Base por defecto
+    
     for i in range(1, len(partes), 2):
         indicador, contenido = partes[i], partes[i+1]
         match = re.search(r'(\d{2})(\d{2})/(\d{2})(\d{2})', contenido)
         if match:
             d_i, h_i, d_f, h_f = map(int, match.groups())
             if d_i <= d_actual <= d_f:
-                if h_i <= h_actual < h_f: vigente = f"{indicador} {contenido}"
+                if h_i <= h_actual < h_f:
+                    vigente = f"{indicador} {contenido}"
     return vigente.strip()
 
 def parse_viento(texto):
     match = re.search(r'\b(\d{3})(\d{2,3})(G\d{2,3})?KT\b', texto)
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3)[1:]) if match.group(3) else 0) if match else (None, None, None)
+    if match:
+        d, v = int(match.group(1)), int(match.group(2))
+        g = int(match.group(3)[1:]) if match.group(3) else 0
+        return d, v, g
+    return None, None, None
 
 def parse_visibilidad(texto):
     if "CAVOK" in texto: return 9999
@@ -65,7 +71,6 @@ def extraer_fenos(texto):
     return set(p for p in palabras if any(c in p.replace("+","").replace("-","") for c in codigos) and len(p) <= 5)
 
 def obtener_icono_condicion(metar_text):
-    """Mapeo de iconos según fenómeno e intensidad (+)"""
     icon_cond = "✈️"
     icon_int = "⚠️ " if "+" in metar_text else ""
     
@@ -91,25 +96,25 @@ def auditar(icao, metar, taf_completo):
     nm, np = parse_nubes(metar), parse_nubes(periodo)
     fm, fp = extraer_fenos(metar), extraer_fenos(periodo)
 
-    # Criterios Viento
+    # 1. VIENTO
     if vr is not None and vt is not None:
         if (vr >= 10 or vt >= 10) and abs(dr - dt) >= 60: enmiendas.append("VIENTO: Giro >= 60°")
         if abs(vr - vt) >= 10: enmiendas.append("VIENTO: Dif. Vel. media >= 10kt")
         if (vr >= 15 or vt >= 15) and abs(gr - gt) >= 10: enmiendas.append("VIENTO: Ráfaga (Dif >= 10kt)")
 
-    # Criterios Visibilidad (150, 350, 600, 800, 1500, 3000, 5000)
+    # 2. VISIBILIDAD (Umbrales SMN)
     for u in [150, 350, 600, 800, 1500, 3000, 5000]:
         if (vm <= u < vp) or (vp <= u < vm):
             enmiendas.append(f"VIS: Pasó umbral {u}m")
             break
 
-    # Criterios Techos (100, 200, 500, 1000, 1500)
+    # 3. NUBES (BKN/OVC)
     for u in [100, 200, 500, 1000, 1500]:
         if (nm <= u < np) or (np <= u < nm):
             enmiendas.append(f"NUBES: Techo pasó {u}ft")
             break
 
-    # Criterios Fenómenos (Inicio, Fin o Intensidad)
+    # 4. FENÓMENOS
     diff = fm.symmetric_difference(fp)
     if diff:
         for c in diff: enmiendas.append(f"FENÓMENO: Cambio en {c}")
@@ -117,7 +122,7 @@ def auditar(icao, metar, taf_completo):
     return enmiendas, periodo
 
 # --- 3. INTERFAZ ---
-st.title("🖥️ Monitor FIR SAVC - Auditoría SMN")
+st.title("🖥️ Vigilancia FIR SAVC - Auditoría SMN")
 
 cols = st.columns(2)
 headers = {"X-API-Key": API_KEY}
@@ -125,5 +130,15 @@ headers = {"X-API-Key": API_KEY}
 for i, icao in enumerate(AERODROMOS):
     try:
         r_hash = random.randint(1, 999999)
-        m_raw = requests.get(f"https://api.checkwx.com/metar/{icao}?cache={r_hash}", headers=headers).json().get('data',['-'])[0]
-        t_raw = requests.get(f"https://api.checkwx.
+        url_m = f"https://api.checkwx.com/metar/{icao}?cache={r_hash}"
+        url_t = f"https://api.checkwx.com/taf/{icao}?cache={r_hash}"
+        
+        m_res = requests.get(url_m, headers=headers).json().get('data', ['-'])[0]
+        t_res = requests.get(url_t, headers=headers).json().get('data', ['-'])[0]
+        
+        if m_res != '-' and t_res != '-':
+            alertas, periodo_v = auditar(icao, m_res, t_res)
+            icon_clima = obtener_icono_condicion(m_res)
+            icon_alerta = "🟥 " if alertas else ""
+            
+            with cols
