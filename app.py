@@ -27,8 +27,8 @@ st.markdown(hide_st_style, unsafe_allow_html=True)
 # Refresco cada 2 minutos
 st_autorefresh(interval=120000, key="datarefresh")
 
-API_KEY = "1c208dc6ec9442cd97575bdf518fb4a9"
-AERODROMOS = ["SAVV","SAVE","SAVT","SAVC","SAWC","SAWG","SAWE","SAWH"]
+API_KEY = "8e7917816866402688f805f637eb54d3"
+AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
 # --- 2. FUNCIONES TÉCNICAS ---
 def diff_angular(d1, d2):
