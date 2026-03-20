@@ -1,87 +1,84 @@
-# --- CONFIGURACIÓN DE CRITERIOS DE ENMIENDA (SMN ARGENTINA) ---
+# --- PARÁMETROS OFICIALES DE ENMIENDA (SMN ARGENTINA) ---
 
 # Umbrales de visibilidad en metros
 VIS_THRESHOLDS = [150, 350, 600, 800, 1500, 3000, 5000]
 
-# Umbrales de techo de nubes (BKN/OVC) y visibilidad vertical en pies
-CEILING_THRESHOLDS = [100, 200, 500, 1000, 1500]
+# Umbrales de altura (Nubes BKN/OVC y Visibilidad Vertical) en pies
+HEIGHT_THRESHOLDS = [100, 200, 500, 1000, 1500]
 
-# Fenómenos significativos que requieren enmienda inmediata
-# Se dispara si inician, terminan o cambian de intensidad
-SIG_PHENOMENA = [
-    'TS', 'GR', 'RA', 'SN', 'DZ', 'FG', 'FC', 'SS', 'DS', 'SQ', 'VA'
-]
+# Fenómenos que requieren enmienda inmediata
+SIG_PHENOMENA = ['TS', 'GR', 'RA', 'SN', 'DZ', 'FG', 'FC', 'SS', 'DS', 'SQ', 'VA']
 
 def check_amendment_criteria(taf, metar):
     """
-    Compara un TAF (pronóstico) contra un METAR (realidad).
-    Retorna una lista de alertas si se cumplen los criterios de enmienda.
+    Compara el pronóstico (TAF) contra la realidad (METAR)
+    y devuelve una lista con los motivos de enmienda encontrados.
     """
     alerts = []
 
-    # 1. VIENTO
-    # Cambio en dirección >= 60° con velocidad >= 10kt
-    dir_diff = abs(taf['wind_dir'] - metar['wind_dir'])
-    if dir_diff >= 60 and (taf['wind_speed'] >= 10 or metar['wind_speed'] >= 10):
+    # 1. VALIDACIÓN DE VIENTO
+    # Cambio de dirección >= 60° con velocidad >= 10kt
+    dir_diff = abs(taf['w_dir'] - metar['w_dir'])
+    if dir_diff >= 60 and (taf['w_spd'] >= 10 or metar['w_spd'] >= 10):
         alerts.append(f"VIENTO: Cambio de dirección de {dir_diff}° (Umbral 60° con >10kt)")
 
-    # Cambio en velocidad media >= 10kt
-    if abs(taf['wind_speed'] - metar['wind_speed']) >= 10:
-        alerts.append(f"VIENTO: Variación de velocidad media >= 10kt")
+    # Cambio de velocidad media >= 10kt
+    if abs(taf['w_spd'] - metar['w_spd']) >= 10:
+        alerts.append(f"VIENTO: Cambio de intensidad media >= 10kt")
 
-    # Variación de ráfagas (Gusts) >= 10kt con media >= 15kt
-    if abs(taf['wind_gust'] - metar['wind_gust']) >= 10:
-        if taf['wind_speed'] >= 15 or metar['wind_speed'] >= 15:
-            alerts.append(f"VIENTO: Variación de ráfagas >= 10kt con viento medio >= 15kt")
+    # Variación de ráfagas >= 10kt si la media es >= 15kt
+    if abs(taf['w_gst'] - metar['w_gst']) >= 10:
+        if taf['w_spd'] >= 15 or metar['w_spd'] >= 15:
+            alerts.append(f"VIENTO: Ráfaga varió >= 10kt con viento medio >= 15kt")
 
-    # 2. VISIBILIDAD HORIZONTAL
-    # Cruce de umbrales operativos
+    # 2. VALIDACIÓN DE VISIBILIDAD
     for limit in VIS_THRESHOLDS:
+        # Detecta si la visibilidad cruzó (subió o bajó) un umbral
         if (taf['vis'] < limit <= metar['vis']) or (taf['vis'] >= limit > metar['vis']):
-            alerts.append(f"VISIBILIDAD: Cruzó umbral de {limit}m")
+            alerts.append(f"VISIBILIDAD: Cruzó el umbral crítico de {limit}m")
 
-    # 3. NUBOSIDAD (TECHO BKN/OVC)
-    # Cruce de umbrales de altura
-    for limit in CEILING_THRESHOLDS:
-        if (taf['ceiling_alt'] < limit <= metar['ceiling_alt']) or \
-           (taf['ceiling_alt'] >= limit > metar['ceiling_alt']):
-            alerts.append(f"NUBES: Techo cruzó umbral de {limit}ft")
+    # 3. VALIDACIÓN DE NUBES Y VISIBILIDAD VERTICAL
+    for limit in HEIGHT_THRESHOLDS:
+        # Detecta si el techo (BKN/OVC) cruzó un umbral
+        if (taf['ceil'] < limit <= metar['ceil']) or (taf['ceil'] >= limit > metar['ceil']):
+            alerts.append(f"NUBES/VV: La base de la capa cruzó los {limit}ft")
 
-    # Cambio de cobertura (SCT/FEW a BKN/OVC o viceversa) bajo 1500ft
-    if metar['ceiling_alt'] <= 1500 or taf['ceiling_alt'] <= 1500:
-        if (taf['is_broken_overcast'] != metar['is_broken_overcast']):
+    # Cambio de cobertura (de pocas a muchas o viceversa) bajo 1500ft
+    if (taf['ceil'] <= 1500 or metar['ceil'] <= 1500):
+        if taf['is_bkn_ovc'] != metar['is_bkn_ovc']:
             alerts.append("NUBES: Cambio de cobertura (SCT/FEW <-> BKN/OVC) bajo 1500ft")
 
-    # 4. FENÓMENOS
-    # Compara si el fenómeno cambió (simplificado a presencia/ausencia)
-    for phenom in SIG_PHENOMENA:
-        in_taf = phenom in taf['weather']
-        in_metar = phenom in metar['weather']
-        if in_taf != in_metar:
-            status = "Inicia" if in_metar else "Termina"
-            alerts.append(f"FENÓMENO: {status} {phenom}")
+    # 4. FENÓMENOS SIGNIFICATIVOS
+    for p in SIG_PHENOMENA:
+        if (p in taf['wx']) != (p in metar['wx']):
+            accion = "Inicia" if p in metar['wx'] else "Termina"
+            alerts.append(f"FENÓMENO: {accion} {p}")
 
     return alerts
 
-# --- EJEMPLO DE USO ---
-taf_ejemplo = {
-    'wind_dir': 120, 'wind_speed': 5, 'wind_gust': 0,
-    'vis': 6000, 'ceiling_alt': 2000, 'is_broken_overcast': False,
-    'weather': []
+# --- BLOQUE DE PRUEBA (ESTO ES LO QUE SE MOSTRARÁ EN PANTALLA) ---
+
+# Simulamos un TAF vigente
+taf_actual = {
+    'w_dir': 100, 'w_spd': 5, 'w_gst': 0,
+    'vis': 5000, 'ceil': 2000, 'is_bkn_ovc': False,
+    'wx': []
 }
 
-metar_ejemplo = {
-    'wind_dir': 190, 'wind_speed': 12, 'wind_gust': 0, # Cambio > 60° y > 10kt
-    'vis': 1200, 'ceiling_alt': 800, # Cruzó 1500m y 1000ft
-    'is_broken_overcast': True,
-    'weather': ['RA'] # Inicia lluvia
+# Simulamos un METAR que acaba de salir y rompe los criterios
+metar_nuevo = {
+    'w_dir': 170, 'w_spd': 15, 'w_gst': 0, # Cambio > 60° y > 10kt
+    'vis': 800, 'ceil': 400,              # Bajó de 1500m y de 500ft
+    'is_bkn_ovc': True,                   # Pasó a estar nublado
+    'wx': ['RA', 'TS']                    # Empezó a llover y tormenta
 }
 
-resultados = check_amendment_criteria(taf_ejemplo, metar_ejemplo)
+print("--- COMPROBACIÓN DE ENMIENDA TAF ---")
+motivos = check_amendment_criteria(taf_actual, metar_nuevo)
 
-if resultados:
-    print("ALERTA DE ENMIENDA REQUERIDA:")
-    for a in resultados:
-        print(f"- {a}")
+if motivos:
+    print(f"SE REQUIERE ENMIENDA. Motivos ({len(motivos)}):")
+    for m in motivos:
+        print(f" -> {m}")
 else:
-    print("Condiciones dentro de parámetros.")
+    print("No se requiere enmienda. Las condiciones están dentro de los parámetros.")
