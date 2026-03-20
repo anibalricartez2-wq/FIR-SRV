@@ -6,49 +6,53 @@ import pandas as pd
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. CONFIGURACIÓN Y ESTILOS ---
-st.set_page_config(page_title="Vigilancia SAVC v5.1", page_icon="✈️", layout="wide")
+# --- 1. CONFIGURACIÓN, LAYOUT Y CRÉDITOS ---
+st.set_page_config(page_title="Vigilancia SAVC v5.2", page_icon="✈️", layout="wide")
 
 # Selector de Pantalla en barra lateral
-layout_choice = st.sidebar.radio("Disposición de Pantalla:", ["Ancho (Filtro total)", "Centrado (Lectura)"])
-if layout_choice == "Centrado (Lectura)":
+layout_choice = st.sidebar.radio("Disposición de Pantalla:", ["Ancho (Grilla)", "Centrado (Lista)"])
+if layout_choice == "Centrado (Lista)":
     st.markdown("""<style>.block-container {max-width: 900px;}</style>""", unsafe_allow_html=True)
 
 if 'log_alertas' not in st.session_state:
     st.session_state.log_alertas = []
 
-# Ocultar elementos de Streamlit y definir pie de página
+# Ocultar basura de Streamlit y personalizar estilos
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .stDeployButton {display:none;}
     .reportview-container .main .block-container {padding-top: 1rem;}
+    .stCode {background-color: #f0f2f6 !important;}
     </style>
 """, unsafe_allow_html=True)
 
-st_autorefresh(interval=1800000, key="auto_refresh")
+# Auto-refresco cada 3 minutos (180000ms) para no saturar API
+st_autorefresh(interval=180000, key="auto_refresh")
 
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
-# --- 2. MOTOR DE PARSEO (FILTRO DE TOKENS) ---
+# --- 2. MOTOR DE PROCESAMIENTO (FILTRO ANTI-HORARIOS) ---
 
 def get_token_vis(texto):
-    """Halla la visibilidad ignorando grupos de tiempo (/) o (Z)"""
+    """Extrae visibilidad real ignorando grupos de tiempo o fechas"""
     if any(x in texto for x in ["CAVOK", "SKC", "NSC", "CLR"]): return 9999
-    tokens = texto.split()
+    # Limpiamos barras de tiempo para evitar confusiones
+    t_limpio = re.sub(r'\d{4}/\d{4}', '', texto)
+    tokens = t_limpio.split()
     for t in tokens:
-        if "/" in t or "Z" in t or t.startswith("FM") or len(t) > 4: continue
+        if "/" in t or "Z" in t or t.startswith("FM") or len(t) != 4: continue
         if re.fullmatch(r'\d{4}', t): return int(t)
     return 9999
 
 def obtener_bloque_vigente(taf_raw):
-    """Lógica cronológica para extraer el tramo del TAF que aplica ahora"""
+    """Extrae quirúrgicamente el tramo del TAF que aplica ahora mismo"""
     ahora = datetime.now(timezone.utc)
     ref = ahora.day * 10000 + ahora.hour * 100 + ahora.minute
     
-    # Limpieza de cabecera
+    # Limpieza de cabecera OACI
     cuerpo = re.sub(r'^(TAF\s+)?([A-Z]{4})\s+\d{6}Z\s+', '', taf_raw)
     partes = re.split(r'\b(FM|BECMG|TEMPO|PROB\d{2})\b', cuerpo)
     
@@ -77,16 +81,17 @@ def get_clima_icon(metar):
     if "SN" in metar: return "❄️"
     if "RA" in metar or "DZ" in metar: return "🌧️"
     if "FG" in metar or "BR" in metar: return "🌫️"
+    if "HZ" in metar or "FU" in metar: return "🌫️"
     if "CAVOK" in metar: return "☀️"
     return "✈️"
 
-# --- 3. AUDITORÍA (CRITERIOS PDF) ---
+# --- 3. AUDITORÍA (CRITERIOS SMN) ---
 
-def auditar_v51(icao, metar, taf):
+def auditar_v52(icao, metar, taf):
     p_vigente = obtener_bloque_vigente(taf)
     alertas = []
     
-    # Visibilidad (Escalones SMN)
+    # Visibilidad (Comparación por escalones)
     vm, vp = get_token_vis(metar), get_token_vis(p_vigente)
     umbrales_v = [150, 350, 600, 800, 1500, 3000, 5000]
     ev_m = next((i for i, u in enumerate(umbrales_v) if vm < u), 8)
@@ -107,30 +112,57 @@ def auditar_v51(icao, metar, taf):
             
     return alertas, p_vigente
 
-# --- 4. INTERFAZ ---
+# --- 4. INTERFAZ DE USUARIO ---
 st.title("🖥️ Monitor de Vigilancia Meteorológica - SAVC")
-st.write(f"Actualización (UTC): {datetime.now(timezone.utc).strftime('%H:%M')}")
+st.write(f"**Actualización Automática (UTC):** {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
 
 cols = st.columns(2)
 headers = {"X-API-Key": API_KEY}
 
 for i, icao in enumerate(AERODROMOS):
     try:
-        r_id = random.randint(1, 9999)
+        r_id = random.randint(1, 99999)
         m_r = requests.get(f"https://api.checkwx.com/metar/{icao}?cache={r_id}", headers=headers).json().get('data',['-'])[0]
         t_r = requests.get(f"https://api.checkwx.com/taf/{icao}?cache={r_id}", headers=headers).json().get('data',['-'])[0]
         
         if m_r != '-' and t_r != '-':
-            alertas, p_vigente = auditar_v51(icao, m_r, t_r)
+            alertas, p_vigente = auditar_v52(icao, m_r, t_r)
             status_icon = "🟥" if alertas else "✅"
             weather_icon = get_clima_icon(m_r)
             
             with cols[i % 2]:
                 with st.expander(f"{status_icon} {weather_icon} {icao}", expanded=True):
-                    # Informe TAF Vigente
-                    st.markdown(f"**INFORME TAF VIGENTE:**")
+                    # TAF VIGENTE
+                    st.markdown("**INFORME TAF VIGENTE:**")
                     st.code(p_vigente, language=None)
                     
                     # METAR
-                    st.markdown(f"**METAR ACTUAL:**")
-                    st.success(m_r
+                    st.markdown("**METAR ACTUAL:**")
+                    st.success(m_r)
+                    
+                    # ALERTAS
+                    for a in alertas:
+                        st.error(a)
+                        # Registro en log
+                        log_entry = {"Hora": datetime.now().strftime("%H:%M"), "OACI": icao, "Alerta": a}
+                        if not any(l['OACI']==icao and l['Alerta']==a for l in st.session_state.log_alertas[-3:]):
+                            st.session_state.log_alertas.append(log_entry)
+                    
+                    # TAF COMPLETO (Referencia)
+                    st.caption(f"Referencia TAF Completo: {t_r}")
+    except:
+        st.error(f"Falla de conexión en {icao}")
+
+# --- 5. LOG Y CRÉDITOS ---
+if st.session_state.log_alertas:
+    st.divider()
+    with st.expander("📊 Log de Novedades del Turno (Últimas 10)"):
+        st.table(pd.DataFrame(st.session_state.log_alertas).tail(10))
+
+st.markdown(f"""
+    <hr>
+    <div style="text-align: center; color: #777; font-size: 0.9rem; padding-bottom: 30px;">
+        Desarrollado en colaboración por <b>Gemini AI</b> & <b>Tu Usuario</b><br>
+        © {datetime.now().year} - Vigilancia Aeronáutica FIR SAVC (Comodoro Rivadavia)
+    </div>
+""", unsafe_allow_html=True)
