@@ -7,26 +7,28 @@ from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. CONFIGURACIÓN, TEMAS Y LAYOUT ---
-st.set_page_config(page_title="Vigilancia SAVC v5.5", page_icon="✈️", layout="wide")
+st.set_page_config(page_title="Vigilancia SAVC v5.6", page_icon="✈️", layout="wide")
 
-# Ocultar solo lo innecesario (Deploy y Footer), manteniendo el Sidebar funcional
+# CSS para ocultar menús de código, deploy y pie de página de Streamlit
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .stDeployButton {display:none;}
-    /* Ajuste para que el contenido empiece bien arriba */
-    .block-container {padding-top: 1rem; padding-bottom: 1rem;}
+    [data-testid="stHeader"] {background: rgba(0,0,0,0); color: rgba(0,0,0,0);}
+    .block-container {padding-top: 2rem;}
+    /* Eliminar el menú de opciones de la derecha (los 3 puntos) */
+    button[title="View source"], button[title="Manage app"] {display: none;}
     </style>
 """, unsafe_allow_html=True)
 
-# Selector de Pantalla y Tema en barra lateral
+# Selector en barra lateral
 st.sidebar.title("🛠️ Panel de Control")
 st.sidebar.markdown("---")
 layout_choice = st.sidebar.radio("Disposición de Pantalla:", ["Ancho (Grilla)", "Centrado (Lista)"])
 theme_choice = st.sidebar.radio("Modo de Visión:", ["☀️ Día", "🌙 Noche"])
 
-# Lógica de colores según el tema
+# Lógica de colores según el tema (Modo Día ahora es Blanco Puro)
 if theme_choice == "🌙 Noche":
     bg_color = "#0e1117"
     text_color = "#ffffff"
@@ -37,12 +39,19 @@ if theme_choice == "🌙 Noche":
         .stCode {{ background-color: #2d3748 !important; color: #e2e8f0 !important; }}
         .stExpander {{ background-color: {card_bg} !important; border: 1px solid #374151; }}
         h1, h2, h3, h4, p, span, label, .stMarkdown {{ color: {text_color} !important; }}
-        /* Asegurar que el texto de los expanders sea blanco en modo noche */
         .streamlit-expanderHeader {{ color: {text_color} !important; }}
         </style>
     """, unsafe_allow_html=True)
 else:
-    st.markdown("""<style>.stCode { background-color: #f0f2f6 !important; }</style>""", unsafe_allow_html=True)
+    # MODO DÍA: Blanco puro en toda la presentación
+    st.markdown("""
+        <style>
+        .stApp { background-color: #FFFFFF; color: #000000; }
+        .stCode { background-color: #F8F9FA !important; border: 1px solid #E9ECEF !important; color: #212529 !important; }
+        .stExpander { background-color: #FFFFFF !important; border: 1px solid #DEE2E6; }
+        h1, h2, h3, h4, p, span, label { color: #000000 !important; }
+        </style>
+    """, unsafe_allow_html=True)
 
 if layout_choice == "Centrado (Lista)":
     st.markdown("""<style>.block-container {max-width: 900px;}</style>""", unsafe_allow_html=True)
@@ -56,11 +65,10 @@ st_autorefresh(interval=180000, key="auto_refresh")
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
-# --- 2. MOTOR DE PROCESAMIENTO (FILTRO DE TOKENS) ---
+# --- 2. MOTOR DE PROCESAMIENTO ---
 
 def get_token_vis(texto):
     if any(x in texto for x in ["CAVOK", "SKC", "NSC", "CLR"]): return 9999
-    # Limpiamos específicamente los rangos de tiempo con barra
     t_limpio = re.sub(r'\d{4}/\d{4}', '', texto)
     tokens = t_limpio.split()
     for t in tokens:
@@ -97,7 +105,7 @@ def get_clima_icon(metar):
 
 # --- 3. AUDITORÍA ---
 
-def auditar_v55(icao, metar, taf):
+def auditar_v56(icao, metar, taf):
     p_vigente = obtener_bloque_vigente(taf)
     alertas = []
     vm, vp = get_token_vis(metar), get_token_vis(p_vigente)
@@ -131,7 +139,7 @@ for i, icao in enumerate(AERODROMOS):
         t_r = requests.get(f"https://api.checkwx.com/taf/{icao}?cache={r_id}", headers=headers).json().get('data',['-'])[0]
         
         if m_r != '-' and t_r != '-':
-            alertas, p_vigente = auditar_v55(icao, m_r, t_r)
+            alertas, p_vigente = auditar_v56(icao, m_r, t_r)
             icon_alert = "🟥" if alertas else "✅"
             weather_icon = get_clima_icon(m_r)
             
@@ -159,7 +167,7 @@ st.markdown(f"""
     <hr>
     <div style="text-align: center; color: #777; font-size: 0.9rem; padding-bottom: 40px;">
         <b>SISTEMA DE VIGILANCIA AERONÁUTICA SAVC</b><br>
-        Desarrollado en colaboración por <b>Gemini AI</b> & <b>ANIBAL RICARTEZ</b><br>
+        Desarrollado en colaboración por <b>Gemini AI</b> & <b>Despachante de Aeronaves</b><br>
         © {datetime.now().year} - Comodoro Rivadavia, Chubut.
     </div>
 """, unsafe_allow_html=True)
