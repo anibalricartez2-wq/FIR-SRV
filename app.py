@@ -9,10 +9,30 @@ from streamlit_autorefresh import st_autorefresh
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Vigilancia FIR SAVC", page_icon="✈️", layout="wide")
 
-# Refresco cada 30 minutos (1800000 ms)
+# Inicializar el historial
+if 'historial_alertas' not in st.session_state:
+    st.session_state.historial_alertas = []
+
+# ESTILO CSS
+hide_st_style = """
+            <style>
+            .stDeployButton {display:none;}
+            footer {visibility: hidden;}
+            .st-emotion-cache-1wbqy5l {display:none;}
+            .block-container {padding-top: 1rem;}
+            .copyright { text-align: center; color: #888; font-size: 0.8rem; margin-top: 50px; border-top: 1px solid #444; padding-top: 10px; }
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
+# REFRESH CADA 30 MINUTOS
 st_autorefresh(interval=1800000, key="datarefresh")
 
-# --- 2. FUNCIONES DE EXTRACCIÓN (PARSERS) ---
+API_KEY = "8e7917816866402688f805f637eb54d3"
+AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
+
+# --- 2. FUNCIONES DE EXTRACCIÓN Y AUDITORÍA (SEGÚN TABLA SMN) ---
+
 def parse_viento(texto):
     if not texto or "Sin datos" in texto: return None, None, None
     match = re.search(r'(\d{3})(\d{2,3})(G\d{2,3})?KT', texto)
@@ -28,61 +48,49 @@ def parse_visibilidad(texto):
     return int(match.group(1)) if match else 9999
 
 def parse_nubes(texto):
-    # Busca la capa más baja de BKN u OVC
     capas = re.findall(r'(BKN|OVC)(\d{3})', texto)
     if capas:
         return min(int(c[1]) * 100 for c in capas)
     return 9999
 
-# --- 3. LÓGICA DE AUDITORÍA (SEGÚN TABLA SMN) ---
+def obtener_icono_clima(metar_text):
+    if "TS" in metar_text: return "⛈️" 
+    if "VA" in metar_text: return "🌋"
+    if "RA" in metar_text or "DZ" in metar_text: return "🌧️"
+    if "FG" in metar_text or "BR" in metar_text: return "🌫️"
+    if "SKC" in metar_text or "CLR" in metar_text or "NSC" in metar_text: return "☀️"
+    return "✈️"
+
 def auditar(icao, metar, taf):
     enmiendas = []
-    
-    # Datos METAR
+    # Parsers
     dr, vr, gr = parse_viento(metar)
     vis_r = parse_visibilidad(metar)
     techo_r = parse_nubes(metar)
-    
-    # Datos TAF
     dt, vt, gt = parse_viento(taf)
     vis_t = parse_visibilidad(taf)
     techo_t = parse_nubes(taf)
 
-    # A) VIENTO 
     if vr is not None and vt is not None:
-        # Cambio de dirección >= 60° con viento >= 10kt
+        # Viento: Giro >= 60° (vto >= 10kt)
         if (vr >= 10 or vt >= 10) and abs(dr - dt) >= 60:
             enmiendas.append(f"VIENTO: Giro >= 60° ({dr}° vs {dt}°)")
-        
-        # Cambio velocidad media >= 10kt
+        # Viento: Intensidad media >= 10kt
         if abs(vr - vt) >= 10:
-            enmiendas.append(f"VIENTO: Dif. Vel. >= 10kt ({vr} vs {vt}kt)")
-            
-        # Ráfagas (Gusts): Variación >= 10kt siendo media >= 15kt
+            enmiendas.append(f"VIENTO: Dif. Vel. >= 10kt")
+        # Viento: Ráfagas (si media >= 15kt y ráfaga supera en 10kt)
         if (gr > 0) and (vr >= 15 or vt >= 15) and (gr - vr >= 10):
-            enmiendas.append(f"VIENTO: Ráfagas detectadas (+{gr-vr}kt)")
+            enmiendas.append(f"VIENTO: Ráfaga crítica (+{gr-vr}kt)")
 
-    # B) VISIBILIDAD (Umbrales SMN: 150, 350, 600, 800, 1500, 3000, 5000) 
+    # Visibilidad (Umbrales SMN)
     umbrales_vis = [150, 350, 600, 800, 1500, 3000, 5000]
     for u in umbrales_vis:
         if (vis_r <= u < vis_t) or (vis_t <= u < vis_r):
-            enmiendas.append(f"VIS: Cruzó umbral de {u}m")
+            enmiendas.append(f"VIS: Cruzó umbral {u}m")
             break
 
-    # C) NUBES (Umbrales BKN/OVC: 100, 200, 500, 1000, 1500 ft) 
+    # Techos (BKN/OVC)
     umbrales_nubes = [100, 200, 500, 1000, 1500]
     for u in umbrales_nubes:
         if (techo_r <= u < techo_t) or (techo_t <= u < techo_r):
-            enmiendas.append(f"NUBES: Techo cruzó {u}ft")
-            break
-
-    # D) FENÓMENOS (Inicio/Fin de fenómenos críticos) 
-    criticos = ["TS", "VA", "SQ", "FC", "FG", "FZRA", "DZ", "RA", "SN"]
-    for f in criticos:
-        if (f in metar and f not in taf) or (f in taf and f not in metar):
-            enmiendas.append(f"FENÓMENO: Cambio en {f}")
-
-    return enmiendas
-
-# --- 4. INTERFAZ Y RENDERIZADO ---
-# (Aquí va el resto de tu código de UI, columnas y el footer de copyright)
+            enmiendas.append(f"NUBES: Techo cruzó
