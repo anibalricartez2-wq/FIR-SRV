@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. CONFIGURACIÓN, TEMAS Y LAYOUT ---
-st.set_page_config(page_title="Vigilancia SAVC v5.6", page_icon="✈️", layout="wide")
+st.set_page_config(page_title="Vigilancia SAVC v5.7", page_icon="✈️", layout="wide")
 
-# CSS para ocultar menús de código, deploy y pie de página de Streamlit
+# CSS Base para ocultar menús de desarrollo y limpiar interfaz
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -17,18 +17,17 @@ st.markdown("""
     .stDeployButton {display:none;}
     [data-testid="stHeader"] {background: rgba(0,0,0,0); color: rgba(0,0,0,0);}
     .block-container {padding-top: 2rem;}
-    /* Eliminar el menú de opciones de la derecha (los 3 puntos) */
-    button[title="View source"], button[title="Manage app"] {display: none;}
+    button[title="View source"], button[title="Manage app"], button[title="Settings"] {display: none;}
     </style>
 """, unsafe_allow_html=True)
 
-# Selector en barra lateral
+# Sidebar
 st.sidebar.title("🛠️ Panel de Control")
 st.sidebar.markdown("---")
 layout_choice = st.sidebar.radio("Disposición de Pantalla:", ["Ancho (Grilla)", "Centrado (Lista)"])
 theme_choice = st.sidebar.radio("Modo de Visión:", ["☀️ Día", "🌙 Noche"])
 
-# Lógica de colores según el tema (Modo Día ahora es Blanco Puro)
+# Lógica de Contraste y Colores
 if theme_choice == "🌙 Noche":
     bg_color = "#0e1117"
     text_color = "#ffffff"
@@ -36,19 +35,25 @@ if theme_choice == "🌙 Noche":
     st.markdown(f"""
         <style>
         .stApp {{ background-color: {bg_color}; color: {text_color}; }}
-        .stCode {{ background-color: #2d3748 !important; color: #e2e8f0 !important; }}
+        .stCode {{ background-color: #2d3748 !important; color: #e2e8f0 !important; border: 1px solid #4a5568 !important; }}
         .stExpander {{ background-color: {card_bg} !important; border: 1px solid #374151; }}
         h1, h2, h3, h4, p, span, label, .stMarkdown {{ color: {text_color} !important; }}
-        .streamlit-expanderHeader {{ color: {text_color} !important; }}
         </style>
     """, unsafe_allow_html=True)
 else:
-    # MODO DÍA: Blanco puro en toda la presentación
+    # MODO DÍA: Blanco Puro con Alto Contraste para Mensajes
     st.markdown("""
         <style>
         .stApp { background-color: #FFFFFF; color: #000000; }
-        .stCode { background-color: #F8F9FA !important; border: 1px solid #E9ECEF !important; color: #212529 !important; }
-        .stExpander { background-color: #FFFFFF !important; border: 1px solid #DEE2E6; }
+        /* Forzar contraste en bloques de código */
+        .stCode { background-color: #F1F3F5 !important; border: 2px solid #CED4DA !important; color: #212529 !important; }
+        /* Bordes definidos para Alertas y Éxitos */
+        div[data-testid="stNotification"] {
+            border: 1px solid #ADB5BD !important;
+            box-shadow: 0px 2px 4px rgba(0,0,0,0.1);
+        }
+        /* Resaltar bordes de los expanders */
+        .stExpander { border: 1px solid #ADB5BD !important; background-color: #FFFFFF !important; }
         h1, h2, h3, h4, p, span, label { color: #000000 !important; }
         </style>
     """, unsafe_allow_html=True)
@@ -59,7 +64,6 @@ if layout_choice == "Centrado (Lista)":
 if 'log_alertas' not in st.session_state:
     st.session_state.log_alertas = []
 
-# Refresco cada 3 minutos
 st_autorefresh(interval=180000, key="auto_refresh")
 
 API_KEY = "8e7917816866402688f805f637eb54d3"
@@ -105,7 +109,7 @@ def get_clima_icon(metar):
 
 # --- 3. AUDITORÍA ---
 
-def auditar_v56(icao, metar, taf):
+def auditar_v57(icao, metar, taf):
     p_vigente = obtener_bloque_vigente(taf)
     alertas = []
     vm, vp = get_token_vis(metar), get_token_vis(p_vigente)
@@ -120,54 +124,4 @@ def auditar_v56(icao, metar, taf):
         return min(int(c[1]) * 100 for c in capas) if capas else 9999
     nm, np = get_c(metar), get_c(p_vigente)
     for u in [100, 200, 500, 1000, 1500]:
-        if (nm < u <= np) or (np < u <= nm):
-            alertas.append(f"NUBES: Techo cruzó {u}ft")
-            break
-    return alertas, p_vigente
-
-# --- 4. INTERFAZ ---
-st.title("🖥️ Vigilancia Meteorológica FIR SAVC")
-st.write(f"**Actualización UTC:** {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
-
-cols = st.columns(2)
-headers = {"X-API-Key": API_KEY}
-
-for i, icao in enumerate(AERODROMOS):
-    try:
-        r_id = random.randint(1, 99999)
-        m_r = requests.get(f"https://api.checkwx.com/metar/{icao}?cache={r_id}", headers=headers).json().get('data',['-'])[0]
-        t_r = requests.get(f"https://api.checkwx.com/taf/{icao}?cache={r_id}", headers=headers).json().get('data',['-'])[0]
-        
-        if m_r != '-' and t_r != '-':
-            alertas, p_vigente = auditar_v56(icao, m_r, t_r)
-            icon_alert = "🟥" if alertas else "✅"
-            weather_icon = get_clima_icon(m_r)
-            
-            with cols[i % 2]:
-                with st.expander(f"{icon_alert} {weather_icon} {icao}", expanded=True):
-                    st.markdown("**INFORME TAF VIGENTE:**")
-                    st.code(p_vigente, language=None)
-                    st.markdown("**METAR ACTUAL:**")
-                    st.success(m_r)
-                    for a in alertas:
-                        st.error(a)
-                        if not any(l['OACI']==icao and l['Alerta']==a for l in st.session_state.log_alertas[-3:]):
-                            st.session_state.log_alertas.append({"Hora": datetime.now().strftime("%H:%M"), "OACI": icao, "Alerta": a})
-                    st.caption(f"Ref TAF: {t_r}")
-    except:
-        st.error(f"Error {icao}")
-
-# --- 5. LOG Y CRÉDITOS ---
-if st.session_state.log_alertas:
-    st.divider()
-    with st.expander("📊 Log de Novedades del Turno"):
-        st.table(pd.DataFrame(st.session_state.log_alertas).tail(10))
-
-st.markdown(f"""
-    <hr>
-    <div style="text-align: center; color: #777; font-size: 0.9rem; padding-bottom: 40px;">
-        <b>SISTEMA DE VIGILANCIA AERONÁUTICA SAVC</b><br>
-        Desarrollado en colaboración por <b>Gemini AI</b> & <b>Despachante de Aeronaves</b><br>
-        © {datetime.now().year} - Comodoro Rivadavia, Chubut.
-    </div>
-""", unsafe_allow_html=True)
+        if (nm < u <= np) or (np < u
