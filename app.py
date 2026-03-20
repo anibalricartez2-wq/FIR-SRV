@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 import re
-import random
 import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
@@ -9,28 +8,31 @@ from streamlit_autorefresh import st_autorefresh
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Vigilancia FIR SAVC", page_icon="✈️", layout="wide")
 
-# Inicializar el historial en la memoria de la sesión (se mantiene mientras la pestaña esté abierta)
 if 'historial_alertas' not in st.session_state:
     st.session_state.historial_alertas = []
+if 'last_alert_id' not in st.session_state:
+    st.session_state.last_alert_id = {}
 
-# ESTILO PARA OCULTAR LO QUE NO SIRVE
-hide_st_style = """
-            <style>
-            .stDeployButton {display:none;}
-            footer {visibility: hidden;}
-            .st-emotion-cache-1wbqy5l {display:none;}
-            .block-container {padding-top: 1rem;}
-            </style>
-            """
-st.markdown(hide_st_style, unsafe_allow_html=True)
-
-# Refresco cada 2 minutos
 st_autorefresh(interval=120000, key="datarefresh")
 
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 
-# --- 2. FUNCIONES TÉCNICAS ---
+# --- 2. FUNCIONES LÓGICAS ---
+
+def get_weather_icon(metar):
+    """Asigna un icono según fenómenos significativos en el METAR"""
+    if "TS" in metar: return "⛈️" # Tormenta
+    if "RA" in metar or "DZ" in metar: return "🌧️" # Lluvia / Llovizna
+    if "SN" in metar or "SG" in metar: return "❄️" # Nieve
+    if "FG" in metar or "BR" in metar: return "🌫️" # Niebla / Neblina
+    if "HZ" in metar or "FU" in metar: return "🌫️" # Bruma / Humo
+    if "VCTS" in metar: return "🌩️" # Tormenta en las cercanías
+    if "SKC" in metar or "CLR" in metar or "CAVOK" in metar: return "☀️" # Despejado
+    if "BKN" in metar or "OVC" in metar: return "☁️" # Nublado
+    if "SCT" in metar or "FEW" in metar: return "🌤️" # Parcialmente nublado
+    return "🔹" # Por defecto
+
 def diff_angular(d1, d2):
     diff = abs(d1 - d2)
     return diff if diff <= 180 else 360 - diff
@@ -42,88 +44,76 @@ def parse_viento(texto):
         return int(match.group(1)), int(match.group(2)), (int(match.group(3)[1:]) if match.group(3) else 0)
     return None, None, None
 
-def auditar(icao, reporte, taf):
-    alertas = []
-    dr, vr, rr = parse_viento(reporte)
-    dt, vt, rt = parse_viento(taf)
-    if vr is not None and vt is not None:
-        if vr >= 10 or vt >= 10:
-            d_ang = diff_angular(dr, dt)
-            if d_ang >= 60:
-                msg = f"CRIT A: Giro {d_ang}°"
-                alertas.append(msg)
-                # Registro automático
-                st.session_state.historial_alertas.append({
-                    "H_Local": datetime.now().strftime("%H:%M:%S"), 
-                    "OACI": icao, 
-                    "Alerta": "GIRO VTO", 
-                    "Valor": f"{d_ang}°"
-                })
-        
-        if abs(vr - vt) >= 10:
-            msg = f"CRIT B: Dif Int {abs(vr-vt)}kt"
-            alertas.append(msg)
-            st.session_state.historial_alertas.append({
-                "H_Local": datetime.now().strftime("%H:%M:%S"), 
-                "OACI": icao, 
-                "Alerta": "INTENSIDAD", 
-                "Valor": f"{abs(vr-vt)}kt"
-            })
-    return alertas
+def registrar_alerta(icao, tipo, valor):
+    id_alerta = f"{icao}_{tipo}"
+    ahora = datetime.now().strftime("%H:%M")
+    if st.session_state.last_alert_id.get(id_alerta) != valor:
+        st.session_state.historial_alertas.append({
+            "H_Local": ahora, "OACI": icao, "Alerta": tipo, "Detalle": valor
+        })
+        st.session_state.last_alert_id[id_alerta] = valor
 
 # --- 3. INTERFAZ ---
 st.title("🖥️ Vigilancia FIR SAVC")
 
-# --- PANEL DE RESPALDO (AHORA EN EL CENTRO ARRIBA) ---
-with st.container():
+with st.expander("📊 LOG DE DESVÍOS (TURNO ACTUAL)", expanded=False):
     if st.session_state.historial_alertas:
-        st.subheader("📊 Registro de Desvíos del Turno")
         df_log = pd.DataFrame(st.session_state.historial_alertas)
-        
-        # Mostramos una tabla pequeña con los últimos 5 desvíos
-        st.table(df_log.tail(5))
-        
-        col_btn1, col_btn2 = st.columns([1, 4])
-        with col_btn1:
-            csv = df_log.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 DESCARGAR LOG CSV",
-                data=csv,
-                file_name=f"vigilancia_SAVC_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime='text/csv',
-            )
-        with col_btn2:
-            if st.button("🗑️ Limpiar historial"):
-                st.session_state.historial_alertas = []
-                st.rerun()
+        st.table(df_log.iloc[::-1]) # Lo más nuevo arriba
+        if st.button("🗑️ Limpiar Historial"):
+            st.session_state.historial_alertas = []
+            st.session_state.last_alert_id = {}
+            st.rerun()
     else:
-        st.info("🔎 No se han detectado desvíos en el ciclo actual. El registro está vacío.")
+        st.info("No hay desvíos registrados.")
+
+st.divider()
+
+# --- 4. GRILLA DE AERÓDROMOS ---
+headers = {"X-API-Key": API_KEY}
+cols = st.columns(4)
+
+for i, icao in enumerate(AERODROMOS):
+    with cols[i % 4]:
+        try:
+            res_m = requests.get(f"https://api.checkwx.com/metar/{icao}", headers=headers).json()
+            res_t = requests.get(f"https://api.checkwx.com/taf/{icao}", headers=headers).json()
+            
+            metar = res_m.get('data', ['Sin datos'])[0]
+            taf = res_t.get('data', ['Sin datos'])[0]
+            
+            # Obtener icono y procesar alertas
+            icon = get_weather_icon(metar)
+            alertas_locales = []
+            
+            dr, vr, rr = parse_viento(metar)
+            dt, vt, rt = parse_viento(taf)
+            
+            if vr is not None and vt is not None:
+                if (vr >= 10 or vt >= 10) and diff_angular(dr, dt) >= 60:
+                    alertas_locales.append(f"GIRO: {diff_angular(dr, dt)}°")
+                    registrar_alerta(icao, "GIRO", f"{diff_angular(dr, dt)}°")
+                if abs(vr - vt) >= 10:
+                    alertas_locales.append(f"INTENSIDAD: {abs(vr-vt)}kt")
+                    registrar_alerta(icao, "INTENSIDAD", f"{abs(vr-vt)}kt")
+
+            # UI de la Tarjeta
+            color = "red" if alertas_locales else "blue"
+            # Título con Icono de clima
+            st.markdown(f"### {icon} :{color}[{icao}]")
+            
+            if alertas_locales:
+                for a in alertas_locales:
+                    st.error(a)
+            else:
+                st.success("✅ Estabilidad")
+                
+            st.caption(f"**METAR:** `{metar}`")
+            with st.expander("Ver TAF"):
+                st.code(taf, language="markdown")
+                
+        except Exception:
+            st.error(f"Error {icao}")
 
 st.divider()
 st.write(f"Sincronizado: **{datetime.now().strftime('%H:%M:%S')}**")
-
-# Grilla de Aeródromos
-cols = st.columns(2)
-headers = {"X-API-Key": API_KEY}
-
-for i, icao in enumerate(AERODROMOS):
-    try:
-        r_hash = random.randint(1, 999999)
-        res_m = requests.get(f"https://api.checkwx.com/metar/{icao}?cache={r_hash}", headers=headers).json()
-        metar = res_m.get('data', ['Sin datos'])[0]
-        
-        res_t = requests.get(f"https://api.checkwx.com/taf/{icao}?cache={r_hash}", headers=headers).json()
-        taf = res_t.get('data', ['Sin datos'])[0]
-        
-        alertas = auditar(icao, metar, taf) if "Sin datos" not in [metar, taf] else []
-
-        with cols[i % 2]:
-            estado = "⚠️ ALERTA" if alertas else "✅ OK"
-            with st.expander(f"📍 {icao} - {estado}", expanded=True):
-                st.caption("TAF:")
-                st.code(taf)
-                st.markdown(f"**ACTUAL:** `{metar}`")
-                for a in alertas:
-                    st.error(a)
-    except Exception:
-        st.error(f"Falla de conexión en {icao}")
