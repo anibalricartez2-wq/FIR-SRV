@@ -27,11 +27,10 @@ st.markdown(f"""
     .st-emotion-cache-1wbqy5l {{display:none;}}
     .block-container {{padding-top: 1rem;}}
     .stExpander {{ background-color: {card}; border: 1px solid #444; border-radius: 8px; }}
-    pre {{ white-space: pre-wrap !important; }} /* Ajuste para que el código no se desborde */
+    pre {{ white-space: pre-wrap !important; }} 
     </style>
     """, unsafe_allow_html=True)
 
-# Refresco automático cada 2 minutos
 st_autorefresh(interval=120000, key="datarefresh")
 
 API_KEY = "8e7917816866402688f805f637eb54d3"
@@ -46,11 +45,14 @@ def parse_viento(texto):
 
 def parse_vis_ceil(texto):
     vis, ceil = 9999, 9999
+    # Visibilidad
     v = re.search(r'\b(\d{4})\b', texto)
     if v: vis = int(v.group(1))
     elif "CAVOK" in texto: vis = 9999
+    # Techos
     c = re.search(r'(BKN|OVC)(\d{3})', texto)
     if c: ceil = int(c.group(2)) * 100
+    elif "CAVOK" in texto or "NSC" in texto: ceil = 9999
     return vis, ceil
 
 def auditar_detallado(reporte, taf):
@@ -60,27 +62,30 @@ def auditar_detallado(reporte, taf):
     vis_r, ceil_r = parse_vis_ceil(reporte)
     vis_t, ceil_t = parse_vis_ceil(taf)
     
-    if vr is not None and vt is not None:
-        diff = abs(dr - dt)
-        ang = diff if diff <= 180 else 360 - diff
-        if ang >= 60 and (vr >= 10 or vt >= 10):
-            motivos.append(f"GIRO VTO >= 60° ({ang}°)")
-        if abs(vr - vt) >= 10:
-            motivos.append(f"DIF INTENSIDAD {abs(vr-vt)}kt")
+    # COMPARACIÓN DIRECTA (Diferencia = Alerta)
     
-    for u in [150, 350, 600, 800, 1500, 3000, 5000]:
-        if (vis_t < u <= vis_r) or (vis_t >= u > vis_r):
-            motivos.append(f"VISIBILIDAD (Umbral {u}m)")
-            break
+    # 1. Viento: Si dirección o intensidad no coinciden
+    if vr is not None and vt is not None:
+        if dr != dt:
+            motivos.append(f"VTO DIR: TAF {dt}° vs ACT {dr}°")
+        if vr != vt:
+            motivos.append(f"VTO INT: TAF {vt}kt vs ACT {vr}kt")
+    
+    # 2. Visibilidad: Si el valor reportado es distinto al pronosticado
+    if vis_r != vis_t:
+        motivos.append(f"VISIBILIDAD: TAF {vis_t}m vs ACT {vis_r}m")
             
-    for u in [100, 200, 500, 1000, 1500]:
-        if (ceil_t < u <= ceil_r) or (ceil_t >= u > ceil_r):
-            motivos.append(f"TECHO BKN/OVC (Umbral {u}ft)")
-            break
+    # 3. Techos: Si la altura de nubes cambió
+    if ceil_r != ceil_t:
+        t_val = f"{ceil_t}ft" if ceil_t < 9999 else "S/T"
+        r_val = f"{ceil_r}ft" if ceil_r < 9999 else "S/T"
+        motivos.append(f"TECHO: TAF {t_val} vs ACT {r_val}")
         
-    for f in ['TS', 'RA', 'SN', 'FG', 'DZ', 'VA']:
+    # 4. Fenómenos: Si hay algo en el METAR que no estaba en el TAF (o viceversa)
+    for f in ['TS', 'RA', 'SN', 'FG', 'DZ', 'VA', 'GR']:
         if (f in reporte) != (f in taf):
-            motivos.append(f"FENÓMENO: {f}")
+            estado = "NUEVO" if f in reporte else "CESÓ"
+            motivos.append(f"FENÓMENO: {f} ({estado})")
             
     return motivos
 
@@ -91,15 +96,15 @@ def get_icon(msg):
     if "SN" in msg: return "❄️"
     return "☀️" if "CAVOK" in msg or "CLR" in msg else "☁️"
 
-# --- 3. INTERFAZ DE USUARIO ---
+# --- 3. INTERFAZ ---
 st.sidebar.title("CONTROLES")
 st.sidebar.button(f"🌓 MODO {'DÍA' if st.session_state.tema_oscuro else 'NOCHE'}", on_click=toggle_tema)
 
-st.title("🖥️ Vigilancia FIR SAVC")
+st.title("✈️ Vigilancia FIR SAVC")
 
 with st.container():
     if st.session_state.historial_alertas:
-        with st.expander("📋 Historial de Enmiendas (Turno)"):
+        with st.expander("📋 Historial de Discrepancias (Turno)"):
             st.table(pd.DataFrame(st.session_state.historial_alertas).tail(10))
             if st.button("🗑️ Limpiar historial"):
                 st.session_state.historial_alertas = []
@@ -133,9 +138,8 @@ for i, icao in enumerate(AERODROMOS):
                 
                 if enmendar:
                     for m in motivos:
-                        st.warning(f"⚠️ Motivo: {m}")
+                        st.warning(f"⚠️ {m}")
                 
-                # Diseño Vertical (Uno arriba del otro)
                 st.caption("TAF VIGENTE")
                 st.code(taf, language="markdown")
                 
@@ -143,8 +147,9 @@ for i, icao in enumerate(AERODROMOS):
                 st.code(metar, language="markdown")
                 
                 if enmendar:
-                    entry = {"H_UTC": datetime.now(timezone.utc).strftime("%H:%M"), "OACI": icao, "Motivo": ", ".join(motivos)}
-                    if not st.session_state.historial_alertas or st.session_state.historial_alertas[-1]['Motivo'] != entry['Motivo'] or st.session_state.historial_alertas[-1]['OACI'] != icao:
+                    entry = {"H_UTC": datetime.now(timezone.utc).strftime("%H:%M"), "OACI": icao, "Diferencias": " | ".join(motivos)}
+                    # Evitar duplicados seguidos del mismo error
+                    if not st.session_state.historial_alertas or st.session_state.historial_alertas[-1]['Diferencias'] != entry['Diferencias']:
                         st.session_state.historial_alertas.append(entry)
     except Exception:
         st.error(f"Falla de conexión en {icao}")
@@ -152,7 +157,7 @@ for i, icao in enumerate(AERODROMOS):
 st.markdown(f"""
     <div style="text-align: center; color: gray; font-size: 0.8rem; margin-top: 30px;">
         <hr>
-        <b>SISTEMA DE VIGILANCIA TÉCNICA SAVC</b><br>
-        Desarrollado por: Operaciones & Gemini AI | Criterios Técnicos SMN AR
+        <b>VIGILANCIA COMPARATIVA SAVC</b><br>
+        Desarrollado por: Operaciones & Gemini AI | Análisis Directo TAF vs METAR
     </div>
     """, unsafe_allow_html=True)
