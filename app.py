@@ -4,155 +4,129 @@ import re
 import pandas as pd
 from datetime import datetime, timezone
 
-# --- 1. CONFIGURACIÓN DE INTERFAZ Y ESTILO ---
+# --- 1. CONFIGURACIÓN DE PÁGINA Y TEMA ---
 st.set_page_config(page_title="Vigilancia FIR SAVC", page_icon="✈️", layout="wide")
 
 if 'tema_oscuro' not in st.session_state:
-    st.session_state.tema_oscuro = True  # Por defecto modo noche para fatiga visual
+    st.session_state.tema_oscuro = True
 
 def toggle_tema():
     st.session_state.tema_oscuro = not st.session_state.tema_oscuro
 
-# CSS Personalizado: Ocultar basura de Streamlit y manejo de temas
 bg, txt, card = ("#0E1117", "#FFFFFF", "#1E1E1E") if st.session_state.tema_oscuro else ("#F8F9FA", "#000000", "#FFFFFF")
 st.markdown(f"""
     <style>
     .stApp {{ background-color: {bg}; color: {txt}; }}
     .stDeployButton, footer {{display:none !important;}}
-    .block-container {{padding-top: 1rem;}}
-    .stExpander {{ background-color: {card}; border: 1px solid #444; }}
+    .stExpander {{ background-color: {card}; border: 1px solid #444; border-radius: 8px; }}
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. BASE DE DATOS TÉCNICA (PISTAS Y CRITERIOS) ---
+# --- 2. DATOS TÉCNICOS Y CRITERIOS (SMN) ---
 API_KEY = "8e7917816866402688f805f637eb54d3"
-# Diccionario de aeródromos y sus pistas principales
-INFO_AD = {
+AERODROMOS = {
     "SAVV": "07/25", "SAVE": "01/19", "SAVT": "06/24", "SAWC": "07/25",
     "SAVC": "07/25", "SAWG": "07/25", "SAWE": "06/24", "SAWH": "07/25"
 }
-VIS_THRESHOLDS = [150, 350, 600, 800, 1500, 3000, 5000]
-CLOUD_THRESHOLDS = [100, 200, 500, 1000, 1500]
 
-# --- 3. FUNCIONES DE PROCESAMIENTO ---
-def parse_time_validity(taf_text):
-    """Extrae el periodo de validez del TAF (ej. 2012/2112)."""
-    match = re.search(r'(\d{2})(\d{2})/(\d{2})(\d{2})', taf_text)
-    if match:
-        return f"{match.group(2)}:00Z a {match.group(4)}:00Z", int(match.group(2)), int(match.group(4))
-    return "N/A", None, None
+UMBRALES_VIS = [150, 350, 600, 800, 1500, 3000, 5000]
+UMBRALES_CEIL = [100, 200, 500, 1000, 1500]
 
-def parse_metar_full(texto):
+# --- 3. PROCESAMIENTO DE MENSAJES ---
+def parse_msg(texto):
     if not texto or "Sin datos" in texto: return None
-    d = {'dir': 0, 'spd': 0, 'vis': 9999, 'ceil': 9999, 'is_bkn': False, 'raw': texto}
+    d = {'v_dir': 0, 'v_spd': 0, 'vis': 9999, 'ceil': 9999, 'raw': texto}
     
     # Viento
-    vto = re.search(r'(\d{3})(\d{2,3})KT', texto)
-    if vto: d['dir'], d['spd'] = int(vto.group(1)), int(vto.group(2))
+    v = re.search(r'(\d{3})(\d{2,3})KT', texto)
+    if v: d['v_dir'], d['v_spd'] = int(v.group(1)), int(v.group(2))
     
     # Visibilidad
     vis = re.search(r'\b(\d{4})\b', texto)
     if vis: d['vis'] = int(vis.group(1))
+    elif "CAVOK" in texto: d['vis'] = 9999
     
-    # Techo BKN/OVC
+    # Techos (BKN/OVC)
     nubes = re.search(r'(BKN|OVC)(\d{3})', texto)
-    if nubes:
-        d['is_bkn'] = True
-        d['ceil'] = int(nubes.group(2)) * 100
+    if nubes: d['ceil'] = int(nubes.group(2)) * 100
+    
     return d
 
-def auditar_smn(icao, m_raw, t_raw):
-    alertas = []
-    m, t = parse_metar_full(m_raw), parse_metar_full(t_raw)
-    if not m or not t: return []
+def verificar_desviacion(m_txt, t_txt):
+    m, t = parse_msg(m_txt), parse_msg(t_txt)
+    if not m or not t: return False
 
-    # Criterio Viento (60° y 10kt)
-    diff_v = abs(m['dir'] - t['dir'])
-    diff_v = diff_v if diff_v <= 180 else 360 - diff_v
-    if diff_v >= 60 and (m['spd'] >= 10 or t['spd'] >= 10):
-        alertas.append(f"GIRO VTO: {diff_v}°")
-    if abs(m['spd'] - t['spd']) >= 10:
-        alertas.append(f"INT VTO: {abs(m['spd'] - t['spd'])}kt")
+    # Viento: Giro 60° y V >= 10kt o Dif Int 10kt
+    diff_d = abs(m['v_dir'] - t['v_dir'])
+    if (diff_d if diff_d <= 180 else 360 - diff_d) >= 60 and (m['v_spd'] >= 10 or t['v_spd'] >= 10):
+        return True
+    if abs(m['v_spd'] - t['v_spd']) >= 10: return True
 
-    # Criterio Visibilidad
-    for u in VIS_THRESHOLDS:
-        if (t['vis'] < u <= m['vis']) or (t['vis'] >= u > m['vis']):
-            alertas.append(f"VISIB: Cruce umbral {u}m")
+    # Visibilidad
+    for u in UMBRALES_VIS:
+        if (t['vis'] < u <= m['vis']) or (t['vis'] >= u > m['vis']): return True
 
-    # Criterio Techo
-    for u in CLOUD_THRESHOLDS:
-        if (t['ceil'] < u <= m['ceil']) or (t['ceil'] >= u > m['ceil']):
-            alertas.append(f"TECHO: Cruce umbral {u}ft")
+    # Techos
+    for u in UMBRALES_CEIL:
+        if (t['ceil'] < u <= m['ceil']) or (t['ceil'] >= u > m['ceil']): return True
+    
+    # Fenómenos (TS, RA, FG, etc.)
+    for f in ['TS', 'RA', 'FG', 'SN', 'DZ', 'GR', 'VA']:
+        if (f in m_txt) != (f in t_txt): return True
 
-    return alertas
+    return False
 
-# --- 4. INTERFAZ PRINCIPAL ---
-st.sidebar.title("🎮 CONTROLES")
-st.sidebar.button("🌓 MODO DÍA/NOCHE", on_click=toggle_tema)
-
+# --- 4. INTERFAZ ---
+st.sidebar.title("🎛️ CONTROLES")
+st.sidebar.button("🌓 CAMBIAR TEMA", on_click=toggle_tema)
 if 'log' not in st.session_state: st.session_state.log = []
-if st.sidebar.button("🗑️ LIMPIAR HISTORIAL"): st.session_state.log = []
 
-st.title("🖥️ Vigilancia FIR SAVC | Control de Enmiendas")
-st.write(f"Hora Actual: **{datetime.now(timezone.utc).strftime('%H:%M')} Z**")
+st.title("✈️ Monitoreo TAF vs METAR/SPECI")
+st.write(f"Sincronización: **{datetime.now(timezone.utc).strftime('%H:%M')} UTC**")
 
 cols = st.columns(2)
 headers = {"X-API-Key": API_KEY}
 
-for i, icao in enumerate(INFO_AD.keys()):
+for i, (icao, rwy) in enumerate(AERODROMOS.items()):
     try:
-        # Peticiones API
+        # Obtener reportes (La API incluye SPECI en la ruta de metar)
         res_m = requests.get(f"https://api.checkwx.com/metar/{icao}", headers=headers).json()
-        metar_txt = res_m.get('data', ['Sin datos'])[0]
+        metar = res_m.get('data', ['Sin datos'])[0]
         res_t = requests.get(f"https://api.checkwx.com/taf/{icao}", headers=headers).json()
-        taf_txt = res_t.get('data', ['Sin datos'])[0]
+        taf = res_t.get('data', ['Sin datos'])[0]
         
-        # Procesamiento
-        periodo, inicio, fin = parse_time_validity(taf_txt)
-        alertas = auditar_smn(icao, metar_txt, taf_txt)
+        # Validar periodo de tiempo del TAF
+        periodo_match = re.search(r'(\d{4})/(\d{4})', taf)
+        periodo = periodo_match.group(0) if periodo_match else "N/A"
         
-        # Validar si estamos fuera de hora del TAF
-        z_ahora = datetime.now(timezone.utc).hour
-        fuera_hora = False
-        if inicio is not None and fin is not None:
-            if not (inicio <= z_ahora < fin): fuera_hora = True
-
+        # Comparación
+        desviado = verificar_desviacion(metar, taf)
+        
         with cols[i % 2]:
-            color = "#FF4B4B" if alertas else "#00CC66"
-            with st.expander(f"📍 {icao} | RWY {INFO_AD[icao]} 🛫", expanded=True):
-                st.markdown(f"**Periodo TAF:** `{periodo}` {'⚠️ (FUERA DE HORA)' if fuera_hora else ''}")
+            status_color = "#FF4B4B" if desviado else "#00FF00"
+            status_text = "🚨 ENMIENDA REQUERIDA" if desviado else "✅ COINCIDE"
+            
+            with st.expander(f"📍 {icao} | RWY {rwy} 🛫", expanded=True):
+                st.markdown(f"**Periodo:** `{periodo}Z` | <span style='color:{status_color}; font-weight:bold;'>{status_text}</span>", unsafe_allow_html=True)
                 
-                # Layout de reportes
-                c_taf, c_met = st.columns(2)
-                c_taf.caption("TAF VIGENTE")
-                c_taf.code(taf_txt, language="markdown")
-                c_met.caption("METAR ACTUAL")
-                c_met.code(metar_txt, language="markdown")
+                st.caption("MENSAJE TAF VIGENTE")
+                st.code(taf, language="markdown")
                 
-                if alertas:
-                    for a in alertas: st.error(f"🚨 {a}")
-                    # Auto-log
-                    log_entry = f"{datetime.now().strftime('%H:%M')} - {icao}: {', '.join(alertas)}"
-                    if log_entry not in st.session_state.log: st.session_state.log.append(log_entry)
-                else:
-                    st.success("✅ Dentro de parámetros")
+                st.caption("MENSAJE METAR / SPECI ACTUAL")
+                st.code(metar, language="markdown")
                 
-    except:
-        st.error(f"Error de conexión en {icao}")
+                if desviado:
+                    log_msg = f"{datetime.now().strftime('%H:%M')} - {icao}: Desviación detectada."
+                    if not st.session_state.log or st.session_state.log[-1] != log_msg:
+                        st.session_state.log.append(log_msg)
+                st.markdown("---")
+                
+    except Exception:
+        st.error(f"Error de comunicación con {icao}")
 
 # --- 5. REGISTRO Y CRÉDITOS ---
-st.divider()
-with st.expander("📋 REGISTRO DE EVENTOS DEL TURNO"):
-    if st.session_state.log:
-        for entry in reversed(st.session_state.log): st.text(entry)
-    else:
-        st.write("Sin novedades en el ciclo actual.")
+if st.session_state.log:
+    with st.expander("📋 HISTORIAL DE DESVIACIONES DEL TURNO"):
+        for item in reversed(st.session_state.log): st.text(item)
 
-st.markdown(f"""
-    <div style="text-align: center; color: gray; padding: 20px;">
-        <hr>
-        <b>SISTEMA DE VIGILANCIA TÉCNICA SAVC</b><br>
-        Desarrollado por: <b>Operaciones & Gemini AI</b><br>
-        Criterios: SMN Argentina | Fuente: CheckWX API
-    </div>
-    """, unsafe_allow_html=True)
+st.
