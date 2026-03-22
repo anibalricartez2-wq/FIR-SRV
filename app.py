@@ -6,18 +6,22 @@ import pandas as pd
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. CONFIGURACIÓN, LAYOUT Y ESTILOS (TU INTERFAZ ORIGINAL) ---
+# --- 1. CONFIGURACIÓN, LAYOUT Y ESTILOS ---
 st.set_page_config(page_title="Vigilancia SAVC v5.2", page_icon="✈️", layout="wide")
 
-# Selector de Pantalla en barra lateral
+# Barra lateral: Selector de pantalla y BOTÓN DE ACTUALIZACIÓN MANUAL
 layout_choice = st.sidebar.radio("Disposición de Pantalla:", ["Ancho (Grilla)", "Centrado (Lista)"])
 if layout_choice == "Centrado (Lista)":
     st.markdown("""<style>.block-container {max-width: 900px;}</style>""", unsafe_allow_html=True)
 
+st.sidebar.divider()
+if st.sidebar.button("🔄 Actualizar Ahora (Forzar Consulta)"):
+    st.rerun()
+
 if 'log_alertas' not in st.session_state:
     st.session_state.log_alertas = []
 
-# Estilos personalizados y ocultar menús de Streamlit
+# Estilos personalizados originales
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -28,14 +32,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- CONFIGURACIÓN DE TIEMPO (30 MINUTOS) ---
+# Auto-refresco cada 30 minutos (1800000ms)
 st_autorefresh(interval=1800000, key="auto_refresh")
 
 API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 ICAO_STRING = ",".join(AERODROMOS)
 
-# --- 2. MOTOR DE PROCESAMIENTO (TUS FUNCIONES ORIGINALES) ---
+# --- 2. MOTOR DE PROCESAMIENTO ---
 
 def get_token_vis(texto):
     if any(x in texto for x in ["CAVOK", "SKC", "NSC", "CLR"]): return 9999
@@ -96,7 +100,7 @@ def auditar_v52(icao, metar, taf):
             break
     return alertas, p_vigente
 
-# --- 4. INTERFAZ DE USUARIO (TU DISEÑO ORIGINAL) ---
+# --- 3. INTERFAZ DE USUARIO ---
 st.title("🖥️ Monitor de Vigilancia Meteorológica - SAVC")
 st.write(f"**Actualización Automática (UTC):** {datetime.now(timezone.utc).strftime('%H:%M:%S')}")
 
@@ -105,52 +109,53 @@ headers = {"X-API-Key": API_KEY}
 
 try:
     r_id = random.randint(1, 99999)
-    # Pedimos todos los METAR y TAF juntos para ahorrar créditos
+    # Consulta por lote (Batch) para ahorro de créditos
     res_metar = requests.get(f"https://api.checkwx.com/metar/{ICAO_STRING}?cache={r_id}", headers=headers).json().get('data', [])
     res_taf = requests.get(f"https://api.checkwx.com/taf/{ICAO_STRING}?cache={r_id}", headers=headers).json().get('data', [])
 
-    # Organizamos los datos para que el bucle los encuentre fácil
     metar_dict = {m[:4]: m for m in res_metar}
     taf_dict = {t[:4]: t for t in res_taf}
 
-    # El bucle recorre los aeródromos y los coloca en las 2 columnas como antes
     for i, icao in enumerate(AERODROMOS):
         m_r = metar_dict.get(icao, '-')
         t_r = taf_dict.get(icao, '-')
         
         if m_r != '-' and t_r != '-':
             alertas, p_vigente = auditar_v52(icao, m_r, t_r)
-            status_icon = "🟥" if alertas else "✅"
+            
+            # Lógica de icono de estado (Añadido soporte para SPECI)
+            if alertas:
+                status_icon = "🟥"
+            elif "SPECI" in m_r:
+                status_icon = "🟨"  # Ámbar si es SPECI pero no cruza umbrales críticos de alerta
+            else:
+                status_icon = "✅"
+                
             weather_icon = get_clima_icon(m_r)
             
-            # Aquí se mantiene tu layout original de columnas y expanders
             with cols[i % 2]:
                 with st.expander(f"{status_icon} {weather_icon} {icao}", expanded=True):
-                    # TAF VIGENTE
                     st.markdown("**INFORME TAF VIGENTE:**")
                     st.code(p_vigente, language=None)
                     
-                    # METAR
                     st.markdown("**METAR ACTUAL:**")
                     st.success(m_r)
                     
-                    # ALERTAS (Con tu lógica de log)
                     for a in alertas:
                         st.error(a)
                         log_entry = {"Hora": datetime.now().strftime("%H:%M"), "OACI": icao, "Alerta": a}
                         if not any(l['OACI']==icao and l['Alerta']==a for l in st.session_state.log_alertas[-3:]):
                             st.session_state.log_alertas.append(log_entry)
                     
-                    # TAF COMPLETO
                     st.caption(f"Referencia TAF Completo: {t_r}")
         else:
             with cols[i % 2]:
                 st.warning(f"Esperando datos para {icao}...")
 
-except Exception as e:
-    st.error(f"Falla de conexión en el servidor de datos.")
+except Exception:
+    st.error("Error al conectar con la API de CheckWX.")
 
-# --- 5. LOG Y CRÉDITOS ---
+# --- 4. LOG Y CRÉDITOS ---
 if st.session_state.log_alertas:
     st.divider()
     with st.expander("📊 Log de Novedades del Turno (Últimas 10)"):
@@ -159,7 +164,7 @@ if st.session_state.log_alertas:
 st.markdown(f"""
     <hr>
     <div style="text-align: center; color: #777; font-size: 0.9rem; padding-bottom: 30px;">
-        Desarrollado en colaboración por <b>Gemini AI</b> & <b>ANIBAL RICARTEZ</b><br>
+        Desarrollado en colaboración por <b>Gemini AI</b> & <b>Tu Usuario</b><br>
         © {datetime.now().year} - Vigilancia Aeronáutica FIR SAVC (Comodoro Rivadavia)
     </div>
 """, unsafe_allow_html=True)
