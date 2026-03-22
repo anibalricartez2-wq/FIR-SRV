@@ -6,30 +6,52 @@ import pandas as pd
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. CONFIGURACIÓN, LAYOUT Y ESTILOS ---
+# --- 1. CONFIGURACIÓN Y ESTILOS DINÁMICOS (DÍA/NOCHE) ---
 st.set_page_config(page_title="Vigilancia SAVC v5.2", page_icon="✈️", layout="wide")
 
-# Barra lateral
-layout_choice = st.sidebar.radio("Disposición de Pantalla:", ["Ancho (Grilla)", "Centrado (Lista)"])
-if layout_choice == "Centrado (Lista)":
-    st.markdown("""<style>.block-container {max-width: 900px;}</style>""", unsafe_allow_html=True)
+# Barra lateral: Solo Modo Día/Noche y botón de refresco
+st.sidebar.title("Configuración")
+tema = st.sidebar.selectbox("Modo de Pantalla:", ["🌙 Noche", "☀️ Día"])
+
+# Aplicar colores según el tema elegido
+if tema == "🌙 Noche":
+    bg_color = "#0e1117"
+    card_color = "#1d2129"
+    text_color = "#ffffff"
+    st.markdown(f"""
+        <style>
+        .stApp {{ background-color: {bg_color}; color: {text_color}; }}
+        .stExpander {{ background-color: {card_color} !important; border: 1px solid #333; }}
+        .stCode {{ background-color: #111 !important; color: #0f0 !important; }}
+        </style>
+    """, unsafe_allow_html=True)
+else:
+    bg_color = "#ffffff"
+    card_color = "#f0f2f6"
+    text_color = "#000000"
+    st.markdown(f"""
+        <style>
+        .stApp {{ background-color: {bg_color}; color: {text_color}; }}
+        .stExpander {{ background-color: {card_color} !important; border: 1px solid #ddd; }}
+        </style>
+    """, unsafe_allow_html=True)
 
 st.sidebar.divider()
-if st.sidebar.button("🔄 Actualizar Ahora (Forzar Consulta)"):
+if st.sidebar.button("🔄 Actualizar Ahora"):
     st.rerun()
 
-if 'log_alertas' not in st.session_state:
-    st.session_state.log_alertas = []
-
+# Ocultar menús nativos de Streamlit (Saca la opción de ver código)
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .stDeployButton {display:none;}
-    .reportview-container .main .block-container {padding-top: 1rem;}
-    .stCode {background-color: #f0f2f6 !important;}
+    header {visibility: hidden;}
     </style>
 """, unsafe_allow_html=True)
+
+if 'log_alertas' not in st.session_state:
+    st.session_state.log_alertas = []
 
 # Auto-refresco cada 30 minutos
 st_autorefresh(interval=1800000, key="auto_refresh")
@@ -38,22 +60,18 @@ API_KEY = "8e7917816866402688f805f637eb54d3"
 AERODROMOS = ["SAVV","SAVE","SAVT","SAWC","SAVC","SAWG","SAWE","SAWH"]
 ICAO_STRING = ",".join(AERODROMOS)
 
-# --- 2. MOTOR DE PROCESAMIENTO E ICONOS MEJORADOS ---
+# --- 2. MOTOR DE PROCESAMIENTO ---
 
 def get_clima_icon(metar):
-    """Asigna un icono visual según el fenómeno reportado en el METAR"""
-    if "TS" in metar: return "⛈️"  # Tormenta
-    if "SN" in metar: return "❄️"  # Nieve
-    if "RA" in metar: return "🌧️"  # Lluvia
-    if "DZ" in metar: return "🌦️"  # Llovizna
-    if "FG" in metar or "BR" in metar: return "🌫️"  # Niebla o Neblina
-    if "VA" in metar: return "🌋"  # Ceniza Volcánica
-    if "FU" in metar or "HZ" in metar: return "💨"  # Humo o Bruma
-    if "SQ" in metar: return "🌬️"  # Turbonada
-    if "CAVOK" in metar or "SKC" in metar: return "☀️"  # Despejado
-    if "BKN" in metar or "OVC" in metar: return "☁️"  # Nublado
-    if "FEW" in metar or "SCT" in metar: return "🌤️"  # Parcialmente nublado
-    return "✈️" # Por defecto
+    if "TS" in metar: return "⛈️"
+    if "SN" in metar: return "❄️"
+    if "RA" in metar: return "🌧️"
+    if "DZ" in metar: return "🌦️"
+    if "FG" in metar or "BR" in metar: return "🌫️"
+    if "VA" in metar: return "🌋"
+    if "CAVOK" in metar or "SKC" in metar: return "☀️"
+    if "BKN" in metar or "OVC" in metar: return "☁️"
+    return "✈️"
 
 def get_token_vis(texto):
     if any(x in texto for x in ["CAVOK", "SKC", "NSC", "CLR"]): return 9999
@@ -125,17 +143,10 @@ try:
         
         if m_r != '-' and t_r != '-':
             alertas, p_vigente = auditar_v52(icao, m_r, t_r)
-            
-            # Lógica de estado
-            if alertas: status_icon = "🟥"
-            elif "SPECI" in m_r: status_icon = "🟨"
-            else: status_icon = "✅"
-                
-            # Icono dinámico según el tiempo
+            status_icon = "🟥" if alertas else ("🟨" if "SPECI" in m_r else "✅")
             weather_icon = get_clima_icon(m_r)
             
             with cols[i % 2]:
-                # Mantenemos el formato visual original del expander
                 with st.expander(f"{status_icon} {weather_icon} {icao}", expanded=True):
                     st.markdown("**INFORME TAF VIGENTE:**")
                     st.code(p_vigente, language=None)
@@ -147,12 +158,8 @@ try:
                         if not any(l['OACI']==icao and l['Alerta']==a for l in st.session_state.log_alertas[-3:]):
                             st.session_state.log_alertas.append(log_entry)
                     st.caption(f"Referencia TAF Completo: {t_r}")
-        else:
-            with cols[i % 2]:
-                st.warning(f"Esperando datos para {icao}...")
-
 except Exception:
-    st.error("Error al conectar con la API de CheckWX.")
+    st.error("Error en la conexión de datos.")
 
 # --- 4. LOG Y CRÉDITOS ---
 if st.session_state.log_alertas:
